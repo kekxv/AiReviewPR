@@ -43,7 +43,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Review code
-        uses: kekxv/AiReviewPR@v0.0.3
+        uses: kekxv/AiReviewPR@v0.0.5
         with:
           model: 'gemma2:2b'
           host: ${{ vars.OLLAMA_HOST }}
