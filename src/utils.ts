@@ -52,6 +52,27 @@ export async function post({url, body, header, json}: any): Promise<string> {
     const req = (url_.protocol === "http:" ? http : https).request(options, (res) => {
       let responseBody = '';
 
+      // 根据 Content-Type 头获取字符编码
+      const contentType = res.headers['content-type'];
+      let charset: BufferEncoding = 'utf-8'; // 默认字符编码
+
+      // 解析 Content-Type 以获取编码，如果有指定编码
+      if (contentType) {
+        const match = contentType.match(/charset=([\w-]+)/i);
+        if (match) {
+          if (match[1].toLowerCase() === 'utf-8') {
+            charset = 'utf-8';
+          } else if (match[1].toLowerCase() === 'gbk') {
+            charset = 'ascii';
+          } else if (match[1].toLowerCase() === 'ascii') {
+            charset = 'ascii';
+          } else {
+            charset = 'utf-8'; // 默认字符编码
+          }
+        }
+      }
+      res.setEncoding(charset);
+
       res.on('data', (chunk) => {
         responseBody += chunk;
       });
