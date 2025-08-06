@@ -49,6 +49,7 @@ async function post({ url, body, header, json }) {
         header['Content-Length'] = Buffer.byteLength(data);
         const options = {
             hostname: url_.hostname,
+            port: url_.port || (url_.protocol === "http:" ? 80 : 443),
             path: url_.pathname + (url_.search || ''),
             method: 'POST',
             headers: header
