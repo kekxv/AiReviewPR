@@ -47,6 +47,9 @@ async function post({ url, body, header, json }) {
         header = header || {};
         header['Content-Type'] = header['Content-Type'] || 'application/json';
         header['Content-Length'] = Buffer.byteLength(data);
+        // dump data to console
+        console.log("post data:", data);
+        console.log("post header:", header);
         const options = {
             hostname: url_.hostname,
             port: url_.port || (url_.protocol === "http:" ? 80 : 443),
