@@ -43,6 +43,7 @@ export async function post({url, body, header, json}: any): Promise<string> {
     header['Content-Length'] = Buffer.byteLength(data)
     const options = {
       hostname: url_.hostname, // 确保去掉协议部分
+      port: url_.port, // 包含端口号（如果存在）
       path: url_.pathname + (url_.search || ''),
       method: 'POST',
       headers: header
