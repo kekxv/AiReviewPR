@@ -49,7 +49,7 @@ async function aiGenerate({ host, token, prompt, model, system }) {
         }
     });
     return await (0, utils_1.post)({
-        url: `${host}/v1/api/generate`,
+        url: `${host}/ollama/api/generate`,
         body: data,
         header: { 'Authorization': token ? `Bearer ${token}` : "", }
     });
