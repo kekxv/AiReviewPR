@@ -49,6 +49,9 @@ export async function post({url, body, header, json}: any): Promise<string> {
       headers: header
     };
 
+    // debug print options
+    console.log("post options:", options);
+
     // noinspection DuplicatedCode
     const req = (url_.protocol === "http:" ? http : https).request(options, (res) => {
       let responseBody = '';
