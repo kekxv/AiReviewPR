@@ -47,9 +47,6 @@ async function post({ url, body, header, json }) {
         header = header || {};
         header['Content-Type'] = header['Content-Type'] || 'application/json';
         header['Content-Length'] = Buffer.byteLength(data);
-        // dump data to console
-        console.log("post data:", data);
-        console.log("post header:", header);
         const options = {
             hostname: url_.hostname,
             port: url_.port || (url_.protocol === "http:" ? 80 : 443),
@@ -57,7 +54,6 @@ async function post({ url, body, header, json }) {
             method: 'POST',
             headers: header
         };
-        console.log("post options:", options);
         // noinspection DuplicatedCode
         const req = (url_.protocol === "http:" ? http_1.default : https_1.default).request(options, (res) => {
             let responseBody = '';
@@ -82,8 +78,6 @@ async function post({ url, body, header, json }) {
                     }
                 }
             }
-            console.log('Response status:', res.statusCode);
-            console.log('Response headers:', res.headers);
             res.setEncoding(charset);
             res.on('data', (chunk) => {
                 responseBody += chunk;
