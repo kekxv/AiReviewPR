@@ -83,6 +83,7 @@ async function post({ url, body, header, json }) {
                 }
             }
             console.log('Response status:', res.statusCode);
+            console.log('Response headers:', res.headers);
             res.setEncoding(charset);
             res.on('data', (chunk) => {
                 responseBody += chunk;
