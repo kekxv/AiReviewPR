@@ -53,7 +53,7 @@ async function aiGenerate({host, token, prompt, model, system}: any): Promise<an
     }
   });
   return await post({
-    url: `${host}/ollama/api/generate`,
+    url: `${host}/api/generate`,
     body: data,
     header: {'Authorization': token ? `Bearer ${token}` : "",}
   })
