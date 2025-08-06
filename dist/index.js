@@ -49,7 +49,7 @@ async function aiGenerate({ host, token, prompt, model, system }) {
         }
     });
     return await (0, utils_1.post)({
-        url: `${host}/api/generate`,
+        url: `${host}/v1/api/generate`,
         body: data,
         header: { 'Authorization': token ? `Bearer ${token}` : "", }
     });
