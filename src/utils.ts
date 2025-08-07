@@ -43,6 +43,7 @@ export async function post({url, body, header, json}: any): Promise<string> {
     header['Content-Length'] = Buffer.byteLength(data)
     const options = {
       hostname: url_.hostname, // 确保去掉协议部分
+      port: url_.port || (url_.protocol === "http:" ? 80 : 443),
       path: url_.pathname + (url_.search || ''),
       method: 'POST',
       headers: header
@@ -85,7 +86,7 @@ export async function post({url, body, header, json}: any): Promise<string> {
             resolve(responseBody);
           }
         } catch (error) {
-          reject(new Error('Failed to parse :' + responseBody));
+          reject(new Error('Failed to parse : \'' + responseBody + '\'' + ' with error: ' + error.message));
         }
       });
     });
