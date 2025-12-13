@@ -85,7 +85,7 @@ export async function post({url, body, header, json}: any): Promise<string> {
           } else {
             resolve(responseBody);
           }
-        } catch (error) {
+        } catch (error: any) {
           reject(new Error('Failed to parse : \'' + responseBody + '\'' + ' with error: ' + error.message));
         }
       });
