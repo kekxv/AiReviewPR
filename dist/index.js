@@ -44,6 +44,7 @@ async function aiGenerate({ host, token, prompt, model, system }) {
         endpoint += "v1/";
     }
     endpoint += "chat/completions";
+    console.log(`[DEBUG] aiGenerate calling endpoint: ${endpoint}, model: ${model}`);
     const data = JSON.stringify({
         model: model,
         messages: [
@@ -53,10 +54,14 @@ async function aiGenerate({ host, token, prompt, model, system }) {
         temperature: 0.7,
         top_p: 1,
     });
+    const headers = {};
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
     return await (0, utils_1.post)({
         url: endpoint,
         body: data,
-        header: { 'Authorization': token ? `Bearer ${token}` : "", }
+        header: headers
     });
 }
 async function getPrDiffContext() {
@@ -129,6 +134,7 @@ async function aiCheckDiffContext() {
             if (!items[key])
                 continue;
             let item = items[key];
+            console.log(`[DEBUG] Reviewing file: ${item.path}`);
             // ai generate
             try {
                 let response = await aiGenerate({

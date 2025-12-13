@@ -54,8 +54,10 @@ async function post({ url, body, header, json }) {
             method: 'POST',
             headers: header
         };
+        console.log(`[DEBUG] Sending POST request to: ${url}`);
         // noinspection DuplicatedCode
         const req = (url_.protocol === "http:" ? http_1.default : https_1.default).request(options, (res) => {
+            console.log(`[DEBUG] Response received. Status Code: ${res.statusCode}`);
             let responseBody = '';
             // 根据 Content-Type 头获取字符编码
             const contentType = res.headers['content-type'];
@@ -83,8 +85,16 @@ async function post({ url, body, header, json }) {
                 responseBody += chunk;
             });
             res.on('end', () => {
+                if (res.statusCode && res.statusCode >= 400) {
+                    reject(new Error(`Request failed with status ${res.statusCode}: ${responseBody}`));
+                    return;
+                }
                 try {
                     if (json) {
+                        if (!responseBody.trim()) {
+                            reject(new Error('Received empty response body'));
+                            return;
+                        }
                         resolve(JSON.parse(responseBody));
                     }
                     else {
