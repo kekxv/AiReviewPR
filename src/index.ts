@@ -49,6 +49,8 @@ async function aiGenerate({host, token, prompt, model, system}: any): Promise<an
   }
   endpoint += "chat/completions";
 
+  console.log(`[DEBUG] aiGenerate calling endpoint: ${endpoint}, model: ${model}`);
+
   const data = JSON.stringify({
     model: model,
     messages: [
@@ -59,10 +61,15 @@ async function aiGenerate({host, token, prompt, model, system}: any): Promise<an
     top_p: 1,
   });
 
+  const headers: any = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   return await post({
     url: endpoint,
     body: data,
-    header: {'Authorization': token ? `Bearer ${token}` : "",}
+    header: headers
   })
 }
 
@@ -133,6 +140,7 @@ async function aiCheckDiffContext() {
     for (let key in items) {
       if (!items[key]) continue;
       let item = items[key];
+      console.log(`[DEBUG] Reviewing file: ${item.path}`);
       // ai generate
       try {
         let response = await aiGenerate({
