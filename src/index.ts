@@ -150,12 +150,14 @@ async function aiCheckDiffContext() {
         
         let Review = useChinese ? "审核结果" : "Review";
         let commit: string = response.choices[0].message.content;
-        if (commit.indexOf("```markdown") === 0) {
-          commit = commit.substring("```markdown".length);
-          if (commit.lastIndexOf("```") === commit.length - 3) {
-            commit = commit.substring(0, commit.length - 3);
-          }
+        
+        // Greedy parsing: Try to strip markdown code block wrapper if present
+        commit = commit.trim();
+        const match = commit.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
+        if (match) {
+          commit = match[2];
         }
+        
         let comments = `# ${Review} \r\n${commit_sha_url}/${item.path} \r\n\r\n\r\n${commit}`
         let resp = await pushComments(comments);
         if (!resp.id) {
