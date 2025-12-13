@@ -140,9 +140,9 @@ async function aiCheckDiffContext() {
                 let response = await aiGenerate({
                     host: url,
                     token: process.env.INPUT_AI_TOKEN,
-                    prompt: item.context,
+                    prompt: item.context + `\n\nIMPORTANT: You must respond in ${language}.`,
                     model: model,
-                    system: process.env.INPUT_REVIEW_PROMPT
+                    system: system_prompt
                 });
                 if (!response.choices || response.choices.length === 0 || !response.choices[0].message) {
                     console.error("OpenAI response error:", response);
