@@ -35,23 +35,33 @@ async function pushComments(message) {
     });
 }
 async function aiGenerate({ host, token, prompt, model, system }) {
+    let endpoint = host;
+    if (!endpoint.endsWith("/")) {
+        endpoint += "/";
+    }
+    // Try to adapt to standard OpenAI Base URL format
+    if (!endpoint.includes("/v1/")) {
+        endpoint += "v1/";
+    }
+    endpoint += "chat/completions";
+    console.log(`[DEBUG] aiGenerate calling endpoint: ${endpoint}, model: ${model}`);
     const data = JSON.stringify({
-        prompt: prompt,
         model: model,
-        stream: false,
-        system: system || system_prompt,
-        options: {
-            tfs_z: 1.5,
-            top_k: 30,
-            top_p: 0.8,
-            temperature: 0.7,
-            num_ctx: 10240,
-        }
+        messages: [
+            { role: "system", content: system || system_prompt },
+            { role: "user", content: prompt }
+        ],
+        temperature: 0.7,
+        top_p: 1,
     });
+    const headers = {};
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
     return await (0, utils_1.post)({
-        url: `${host}/api/generate`,
+        url: endpoint,
         body: data,
-        header: { 'Authorization': token ? `Bearer ${token}` : "", }
+        header: headers
     });
 }
 async function getPrDiffContext() {
@@ -124,28 +134,27 @@ async function aiCheckDiffContext() {
             if (!items[key])
                 continue;
             let item = items[key];
+            console.log(`[DEBUG] Reviewing file: ${item.path}`);
             // ai generate
             try {
                 let response = await aiGenerate({
                     host: url,
                     token: process.env.INPUT_AI_TOKEN,
-                    prompt: item.context,
+                    prompt: item.context + `\n\nIMPORTANT: You must respond in ${language}.`,
                     model: model,
-                    system: process.env.INPUT_REVIEW_PROMPT
+                    system: system_prompt
                 });
-                if (response.detail) { // noinspection ExceptionCaughtLocallyJS
-                    throw response.detail;
-                }
-                if (!response.response) { // noinspection ExceptionCaughtLocallyJS
-                    throw "ollama error";
+                if (!response.choices || response.choices.length === 0 || !response.choices[0].message) {
+                    console.error("OpenAI response error:", response);
+                    throw "OpenAI/Ollama response error";
                 }
                 let Review = useChinese ? "审核结果" : "Review";
-                let commit = response.response;
-                if (commit.indexOf("```markdown") === 0) {
-                    commit = commit.substring("```markdown".length);
-                    if (commit.lastIndexOf("```") === commit.length - 3) {
-                        commit = commit.substring(0, commit.length - 3);
-                    }
+                let commit = response.choices[0].message.content;
+                // Greedy parsing: Try to strip markdown code block wrapper if present
+                commit = commit.trim();
+                const match = commit.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
+                if (match) {
+                    commit = match[2];
                 }
                 let comments = `# ${Review} \r\n${commit_sha_url}/${item.path} \r\n\r\n\r\n${commit}`;
                 let resp = await pushComments(comments);

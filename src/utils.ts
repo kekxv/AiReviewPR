@@ -49,8 +49,11 @@ export async function post({url, body, header, json}: any): Promise<string> {
       headers: header
     };
 
+    console.log(`[DEBUG] Sending POST request to: ${url}`);
+
     // noinspection DuplicatedCode
     const req = (url_.protocol === "http:" ? http : https).request(options, (res) => {
+      console.log(`[DEBUG] Response received. Status Code: ${res.statusCode}`);
       let responseBody = '';
 
       // 根据 Content-Type 头获取字符编码
@@ -79,13 +82,22 @@ export async function post({url, body, header, json}: any): Promise<string> {
       });
 
       res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`Request failed with status ${res.statusCode}: ${responseBody}`));
+          return;
+        }
+
         try {
           if (json) {
+            if (!responseBody.trim()) {
+               reject(new Error('Received empty response body'));
+               return;
+            }
             resolve(JSON.parse(responseBody));
           } else {
             resolve(responseBody);
           }
-        } catch (error) {
+        } catch (error: any) {
           reject(new Error('Failed to parse : \'' + responseBody + '\'' + ' with error: ' + error.message));
         }
       });
