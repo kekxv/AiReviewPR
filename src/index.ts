@@ -146,7 +146,7 @@ async function aiCheckDiffContext() {
         let response = await aiGenerate({
           host: url,
           token: process.env.INPUT_AI_TOKEN,
-          prompt: item.context + `\n\nIMPORTANT: You must respond in ${language}.`,
+          prompt: item.context,
           model: model,
           system: system_prompt
         })
@@ -163,7 +163,12 @@ async function aiCheckDiffContext() {
         commit = commit.trim();
         const match = commit.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
         if (match) {
-          commit = match[2];
+          commit = match[2].trim();
+        }
+
+        if (commit === "LGTM") {
+            console.log(`[INFO] No issues found for ${item.path} (LGTM). Skipping comment.`);
+            continue;
         }
         
         let comments = `# ${Review} \r\n${commit_sha_url}/${item.path} \r\n\r\n\r\n${commit}`
