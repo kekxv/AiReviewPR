@@ -108,7 +108,8 @@ async function getHeadDiffContext() {
   let items = [];
   try {
     // exec git diff get diff files
-    const diffOutput = execSync(`git diff --name-only HEAD^`, {encoding: 'utf-8'});
+    const diffCommand = process.platform === 'win32' ? 'HEAD~1' : 'HEAD^';
+    const diffOutput = execSync(`git diff --name-only ${diffCommand}`, {encoding: 'utf-8'});
     let files = diffOutput.trim().split("\n");
     for (let key in files) {
       // noinspection DuplicatedCode
@@ -121,7 +122,7 @@ async function getHeadDiffContext() {
         continue;
       }
 
-      const fileDiffOutput = execSync(`git diff HEAD^ -- "${files[key]}"`, {encoding: 'utf-8'});
+      const fileDiffOutput = execSync(`git diff ${diffCommand} -- "${files[key]}"`, {encoding: 'utf-8'});
       items.push({
         path: files[key],
         context: fileDiffOutput,
@@ -146,7 +147,7 @@ async function aiCheckDiffContext() {
         let response = await aiGenerate({
           host: url,
           token: process.env.INPUT_AI_TOKEN,
-          prompt: item.context + `\n\nIMPORTANT: You must respond in ${language}.`,
+          prompt: item.context,
           model: model,
           system: system_prompt
         })
@@ -163,7 +164,12 @@ async function aiCheckDiffContext() {
         commit = commit.trim();
         const match = commit.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
         if (match) {
-          commit = match[2];
+          commit = match[2].trim();
+        }
+
+        if (commit === "LGTM") {
+            console.log(`[INFO] No issues found for ${item.path} (LGTM). Skipping comment.`);
+            continue;
         }
         
         let comments = `# ${Review} \r\n${commit_sha_url}/${item.path} \r\n\r\n\r\n${commit}`
