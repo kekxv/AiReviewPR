@@ -100,7 +100,8 @@ async function getHeadDiffContext() {
     let items = [];
     try {
         // exec git diff get diff files
-        const diffOutput = (0, node_child_process_1.execSync)(`git diff --name-only HEAD^`, { encoding: 'utf-8' });
+        const diffCommand = process.platform === 'win32' ? 'HEAD~1' : 'HEAD^';
+        const diffOutput = (0, node_child_process_1.execSync)(`git diff --name-only ${diffCommand}`, { encoding: 'utf-8' });
         let files = diffOutput.trim().split("\n");
         for (let key in files) {
             // noinspection DuplicatedCode
@@ -114,7 +115,7 @@ async function getHeadDiffContext() {
                 console.log("exclude(exclude):", files[key]);
                 continue;
             }
-            const fileDiffOutput = (0, node_child_process_1.execSync)(`git diff HEAD^ -- "${files[key]}"`, { encoding: 'utf-8' });
+            const fileDiffOutput = (0, node_child_process_1.execSync)(`git diff ${diffCommand} -- "${files[key]}"`, { encoding: 'utf-8' });
             items.push({
                 path: files[key],
                 context: fileDiffOutput,
