@@ -2,15 +2,12 @@ import {execSync} from "node:child_process";
 import {doesAnyPatternMatch, post, split_message} from "./utils";
 import {take_system_prompt} from "./prompt";
 
-// --- FIX 1: 增加 Diff 行号预处理函数 ---
-// 这一步至关重要，它帮 AI 算好了行号，防止 AI 幻觉
 function addLineNumbersToDiff(diff: string): string {
   const lines = diff.split('\n');
   let result = [];
   let currentNewLine = null;
 
   for (let line of lines) {
-    // 解析 Diff Header，例如 @@ -2,25 +2,25 @@
     if (line.startsWith('@@')) {
       const match = line.match(/\+(\d+)/);
       if (match) {
@@ -25,21 +22,16 @@ function addLineNumbersToDiff(diff: string): string {
       continue;
     }
 
-    // 处理变更行和上下文行
     if (line.startsWith('+')) {
-      // 新增行：标记行号
-      result.push(`${currentNewLine}: ${line}`);
+      // 这里的改变：加了 "Line " 前缀，更醒目
+      result.push(`Line ${currentNewLine}: ${line}`);
       if (currentNewLine !== null) currentNewLine++;
     } else if (line.startsWith(' ')) {
-      // 上下文行：标记行号
-      result.push(`${currentNewLine}: ${line}`);
+      result.push(`Line ${currentNewLine}: ${line}`);
       if (currentNewLine !== null) currentNewLine++;
     } else if (line.startsWith('-')) {
-      // 删除行：没有新文件行号，标记为 OLD
       result.push(`OLD: ${line}`);
-      // 删除行不增加新文件的行号计数
     } else {
-      // 其他元数据
       result.push(line);
     }
   }
@@ -91,13 +83,13 @@ const include_files = split_message(process.env.INPUT_INCLUDE_FILES || "");
 const exclude_files = split_message(process.env.INPUT_EXCLUDE_FILES || "");
 const review_pull_request = (!process.env.INPUT_REVIEW_PULL_REQUEST) ? false : (process.env.INPUT_REVIEW_PULL_REQUEST.toLowerCase() === "true")
 
-// --- FIX 2: 更新 Prompt 提示，告诉 AI 我们加了行号 ---
 function system_prompt_numbered(language: string) {
   return `
 You are a senior code reviewer. Review the provided git diffs.
 
-**IMPORTANT: The code provided has specific line numbers prepended to each line (e.g., "12: + const a = 1;").**
-**You MUST use these exact numbers for 'StartLine' and 'EndLine'.**
+**IMPORTANT: The code has been pre-processed with line numbers (e.g., "Line 12: + const a = 1;").**
+**You MUST use the specific line number provided in the text for 'StartLine' and 'EndLine'.**
+**DOUBLE CHECK: Does the line number you selected actually contain the code you are criticizing?**
 
 **Instructions:**
 1. **Summary:** Provide a brief summary of changes.
@@ -106,8 +98,8 @@ You are a senior code reviewer. Review the provided git diffs.
 
 ---
 File: <file_path>
-StartLine: <line_number_from_diff_prefix>
-EndLine: <line_number_from_diff_prefix>
+StartLine: <number_from_prefix>
+EndLine: <number_from_prefix>
 Comment: [Score: 1-5] <comment>
 ---
 
