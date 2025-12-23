@@ -57,43 +57,33 @@ if (!model) {
 }
 
 
-async function createPullRequestReview(
+async function submitPullRequestReview(
+  message: string,
+  event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES',
   comments: Array<{ path: string; line: number; start_line?: number; body: string }> = [],
   commit_id: string
 ): Promise<any> {
   if (!process.env.INPUT_PULL_REQUEST_NUMBER) {
-     return { id: 0 };
+    console.log(message);
+    return { id: 0 };
   }
+
   const body: any = { 
-    commit_id: commit_id,
-    comments: comments.map(comment => ({
+    body: message, 
+    event: event, 
+    commit_id: commit_id 
+  };
+  
+  if (comments.length > 0) {
+    body.comments = comments.map(comment => ({
         path: comment.path,
         new_position: comment.line, 
         body: comment.body
-    }))
-  };
+    }));
+  }
+
   return await post({
     url: `${process.env.GITHUB_API_URL}/repos/${process.env.INPUT_REPOSITORY}/pulls/${process.env.INPUT_PULL_REQUEST_NUMBER}/reviews`,
-    body: body,
-    header: {'Authorization': `token ${process.env.INPUT_TOKEN}`}
-  });
-}
-
-async function submitPullRequestReview(
-  review_id: number,
-  event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES',
-  message: string
-): Promise<any> {
-  if (!process.env.INPUT_PULL_REQUEST_NUMBER) {
-    console.log(message);
-    return;
-  }
-  const body: any = { 
-      body: message, 
-      event: event 
-  };
-  return await post({
-    url: `${process.env.GITHUB_API_URL}/repos/${process.env.INPUT_REPOSITORY}/pulls/${process.env.INPUT_PULL_REQUEST_NUMBER}/reviews/${review_id}`,
     body: body,
     header: {'Authorization': `token ${process.env.INPUT_TOKEN}`}
   });
@@ -259,13 +249,7 @@ async function aiCheckDiffContext() {
 
         console.log(`[INFO] Submitting batch review with ${allComments.length} comments.`);
         
-        let review = await createPullRequestReview(allComments, process.env.GITHUB_SHA as string);
-        if (!review.id) {
-             console.error("Create Review Response:", review);
-             throw new Error(useChinese ? "创建PR Review失败" : "Create PR Review error");
-        }
-        
-        let resp = await submitPullRequestReview(review.id, event, aggregatedBody);
+        let resp = await submitPullRequestReview(aggregatedBody, event, allComments, process.env.GITHUB_SHA as string);
         
         if (!resp.id) {
           throw new Error(useChinese ? "提交PR Review失败" : "Submit PR Review error")
