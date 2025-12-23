@@ -7,17 +7,26 @@ function parseAIReviewResponse(aiResponse) {
     const parts = aiResponse.split(/\n---+\n/); // Split by "---" on its own line
     let mainBody = parts[0].trim();
     const lineComments = [];
-    for (let i = 1; i < parts.length; i++) {
+    for (let i = 0; i < parts.length; i++) {
         const commentPart = parts[i].trim();
+        if (!commentPart)
+            continue;
         const filePathMatch = commentPart.match(/^File:\s*(.*)$/m);
-        const lineNumberMatch = commentPart.match(/^Line:\s*(\d+)$/m);
+        const startLineMatch = commentPart.match(/^StartLine:\s*(\d+)$/m);
+        const endLineMatch = commentPart.match(/^(?:End)?Line:\s*(\d+)$/m);
         const commentBodyMatch = commentPart.match(/^Comment:\s*([\s\S]*)$/m);
-        if (filePathMatch && lineNumberMatch && commentBodyMatch) {
+        if (filePathMatch && endLineMatch && commentBodyMatch) {
+            const line = parseInt(endLineMatch[1]);
+            const start_line = startLineMatch ? parseInt(startLineMatch[1]) : line;
             lineComments.push({
                 path: filePathMatch[1].trim(),
-                line: parseInt(lineNumberMatch[1]),
+                line: line,
+                start_line: start_line !== line ? start_line : undefined,
                 body: commentBodyMatch[1].trim()
             });
+        }
+        else if (!filePathMatch && !mainBody && commentPart.length > 0 && !commentPart.startsWith("LGTM")) {
+            mainBody = commentPart;
         }
     }
     return { body: mainBody, comments: lineComments };
@@ -56,6 +65,7 @@ async function submitPullRequestReview(message, event, comments = [], commit_id)
             // Assuming AI provides absolute line numbers in the 'head' (RIGHT) side of the diff.
             line: comment.line,
             side: 'RIGHT',
+            start_line: comment.start_line,
             body: comment.body
         }));
     }
@@ -162,6 +172,8 @@ async function aiCheckDiffContext() {
     try {
         let commit_sha_url = `${process.env.GITHUB_SERVER_URL}/${process.env.INPUT_REPOSITORY}/src/commit/${process.env.GITHUB_SHA}`;
         let items = review_pull_request ? await getPrDiffContext() : await getHeadDiffContext();
+        let allComments = [];
+        let allReviewBodies = [];
         for (let key in items) {
             if (!items[key])
                 continue;
@@ -180,7 +192,6 @@ async function aiCheckDiffContext() {
                     console.error("OpenAI response error:", response);
                     throw "OpenAI/Ollama response error";
                 }
-                let Review = useChinese ? "审核结果" : "Review";
                 let commit = response.choices[0].message.content;
                 // Greedy parsing: Try to strip markdown code block wrapper if present
                 commit = commit.trim();
@@ -189,41 +200,38 @@ async function aiCheckDiffContext() {
                     commit = match[2].trim();
                 }
                 const parsedReview = parseAIReviewResponse(commit);
-                let reviewBody = parsedReview.body;
-                const lineComments = parsedReview.comments;
-                let event;
-                if (reviewBody.includes("LGTM") && lineComments.length === 0) { // Only approve if no specific comments and LGTM
-                    console.log(`[INFO] No issues found for ${item.path} (LGTM). Submitting approval.`);
-                    event = 'APPROVE';
+                if (parsedReview.comments.length > 0) {
+                    allComments.push(...parsedReview.comments);
                 }
-                else {
-                    event = 'COMMENT';
+                if (parsedReview.body) {
+                    allReviewBodies.push(`\n\n**File: ${item.path}**\n${parsedReview.body}`);
                 }
-                // Add file context to the review body if it's not empty
-                if (reviewBody) {
-                    reviewBody = `# ${Review} \r\n${commit_sha_url}/${item.path} \r\n\r\n\r\n${reviewBody}`;
-                }
-                else {
-                    // If no general review body, but there are line comments, just use file context as the body
-                    if (lineComments.length > 0) {
-                        reviewBody = `# ${Review} \r\n${commit_sha_url}/${item.path}`;
-                    }
-                    else {
-                        // If no general body and no line comments, and not LGTM, then skip.
-                        // This case should ideally not happen if AI is responding meaningfully.
-                        console.log(`[INFO] No review body or comments generated for ${item.path}. Skipping review.`);
-                        continue;
-                    }
-                }
-                let resp = await submitPullRequestReview(reviewBody, event, lineComments, process.env.GITHUB_SHA);
-                if (!resp.id) {
-                    throw new Error(useChinese ? "提交PR Review失败" : "Submit PR Review error");
-                }
-                console.log(useChinese ? "提交PR Review成功：" : "Submit PR Review success: ", resp.id);
             }
             catch (e) {
                 console.error("aiGenerate:", e);
             }
+        }
+        // Batch Submit
+        if (allComments.length > 0 || allReviewBodies.length > 0) {
+            let Review = useChinese ? "审核结果" : "Review";
+            let aggregatedBody = `# ${Review} Summary\n` + allReviewBodies.join("\n---\n");
+            let event = (allComments.length === 0 && aggregatedBody.includes("LGTM")) ? 'APPROVE' : 'COMMENT';
+            if (allComments.length > 0) {
+                event = 'COMMENT';
+            }
+            else if (allReviewBodies.length === 0) {
+                console.log("No review content generated. Skipping.");
+                return;
+            }
+            console.log(`[INFO] Submitting batch review with ${allComments.length} comments.`);
+            let resp = await submitPullRequestReview(aggregatedBody, event, allComments, process.env.GITHUB_SHA);
+            if (!resp.id) {
+                throw new Error(useChinese ? "提交PR Review失败" : "Submit PR Review error");
+            }
+            console.log(useChinese ? "提交PR Review成功：" : "Submit PR Review success: ", resp.id);
+        }
+        else {
+            console.log("No review to submit (LGTM or empty).");
         }
     }
     catch (error) {
