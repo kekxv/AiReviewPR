@@ -38,10 +38,7 @@ function addLineNumbersToDiff(diff: string): string {
   return result.join('\n');
 }
 
-function parseAIReviewResponse(aiResponse: string): {
-  body: string,
-  comments: Array<{ path: string, line: number, start_line?: number, body: string }>
-} {
+function parseAIReviewResponse(aiResponse: string): { body: string, comments: Array<{ path: string, line: number, start_line?: number, body: string }> } {
   const parts = aiResponse.split(/\n\s*---+\s*\n/);
   let mainBody = "";
   const lineComments: Array<{ path: string, line: number, start_line?: number, body: string }> = [];
@@ -50,14 +47,20 @@ function parseAIReviewResponse(aiResponse: string): {
     const commentPart = parts[i].trim();
     if (!commentPart) continue;
 
-    const filePathMatch = commentPart.match(/^File:\s*(.*)$/m);
-    const startLineMatch = commentPart.match(/^StartLine:\s*(\d+)$/m);
-    const endLineMatch = commentPart.match(/^(?:End)?Line:\s*(\d+)$/m);
-    const commentBodyMatch = commentPart.match(/^Comment:\s*([\s\S]*)$/m);
+    // --- 正则优化 ---
+    // 1. 忽略大小写 (i flag)
+    // 2. 允许英文冒号(:) 或 中文冒号(：)
+    // 3. 兼容 AI 有时候会把 Key 翻译的情况 (但主要靠 Prompt 约束)
+    const filePathMatch = commentPart.match(/^(?:File|文件)\s*[:：]\s*(.*)$/im);
+    const contextMatch = commentPart.match(/^(?:Context|内容|上下文)\s*[:：]\s*(.*)$/im); // 虽不使用但需兼容格式
+    const startLineMatch = commentPart.match(/^(?:StartLine|Start\s*Line|起始行号|开始行号)\s*[:：]\s*(\d+)$/im);
+    const endLineMatch = commentPart.match(/^(?:(?:End)?Line|End\s*Line|结束行号)\s*[:：]\s*(\d+)$/im);
+    const commentBodyMatch = commentPart.match(/^(?:Comment|Review|评论|注释)\s*[:：]\s*([\s\S]*)$/im);
 
     if (filePathMatch && endLineMatch && commentBodyMatch) {
       const line = parseInt(endLineMatch[1]);
       const start_line = startLineMatch ? parseInt(startLineMatch[1]) : line;
+
       lineComments.push({
         path: filePathMatch[1].trim(),
         line: line,
@@ -65,13 +68,15 @@ function parseAIReviewResponse(aiResponse: string): {
         body: commentBodyMatch[1].trim()
       });
     } else {
-      if (!commentPart.startsWith("File:") && !commentPart.startsWith("LGTM")) {
+      // 如果匹配不到 Key，归为 Summary
+      // 过滤掉单纯的 "LGTM" 或疑似 Key 的行
+      if (!commentPart.match(/^File[:：]/i) && !commentPart.startsWith("LGTM")) {
         if (mainBody) mainBody += "\n\n" + commentPart;
         else mainBody = commentPart;
       }
     }
   }
-  return {body: mainBody, comments: lineComments};
+  return { body: mainBody, comments: lineComments };
 }
 
 let useChinese = (process.env.INPUT_CHINESE || "true").toLowerCase() != "false";
@@ -89,35 +94,36 @@ You are a senior code reviewer. Review the provided git diffs.
 
 **IMPORTANT: The code has been pre-processed with line numbers (e.g., "Line 12: + const a = 1;").**
 
-**STRICT RULE: You must verify the line number matches the code.**
-When you find an issue, you MUST copy the exact code content into a "Context" field before assigning line numbers.
+**STRICT RULES:**
+1. **Line Validation:** You MUST verify the line number matches the code. Copy the exact code into the "Context" field.
+2. **Language:** Write the *content* of the comments in ${language}.
+3. **Format Keys:** **KEEP ALL KEYS IN ENGLISH** (File, Context, StartLine, EndLine, Comment). **DO NOT TRANSLATE KEYS.**
+4. **Separators:** Use '---' strictly between issues.
 
 **Instructions:**
-1. **Summary:** Provide a brief summary of changes.
-2. **Analyze:** Focus on logic, security, and best practices.
-3. **Format:** Use the following format for issues:
+1. **Summary:** First, provide a brief summary of changes in ${language}.
+2. **Issues:** List specific issues using the strict format below.
+
+**Strict Output Format:**
+
+<Summary text here...>
 
 ---
 File: <file_path>
 Context: <COPY the exact code line from the diff here>
-StartLine: <number_from_prefix_of_that_line>
-EndLine: <number_from_prefix_of_that_line>
-Comment: [Score: 1-5] <comment>
+StartLine: <number>
+EndLine: <number>
+Comment: [Score: 1-5] <comment content in ${language}>
 ---
 
 **Example:**
 ---
-File: .github/workflows/ci.yml
-Context: Line 10: + runs-on: windows-latest
+File: src/main.js
+Context: Line 10: + console.log("debug");
 StartLine: 10
 EndLine: 10
-Comment: [Score: 2] Changing to windows-latest might affect performance.
+Comment: [Score: 2] 生产环境不建议保留 console.log，建议删除。
 ---
-
-4. **Constraints:**
-    - Language: ${language}
-    - Only review changed lines.
-    - If no issues, output "LGTM".
 `;
 }
 
