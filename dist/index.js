@@ -247,7 +247,8 @@ async function aiCheckDiffContext() {
     try {
         let items = review_pull_request ? await getPrDiffContext() : await getHeadDiffContext();
         let allComments = [];
-        let allReviewBodies = [];
+        // --- 修改点 1: 创建一个新的数组来分别存储文件总结 ---
+        let fileSummaries = [];
         for (let key in items) {
             if (!items[key])
                 continue;
@@ -262,46 +263,63 @@ async function aiCheckDiffContext() {
                     system: system_prompt
                 });
                 if (!response.choices || response.choices.length === 0 || !response.choices[0].message) {
+                    console.error("OpenAI response error:", response);
                     throw "OpenAI/Ollama response error";
                 }
                 let commit = response.choices[0].message.content;
                 commit = commit.trim();
                 const match = commit.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
-                if (match)
+                if (match) {
                     commit = match[2].trim();
+                }
                 const parsedReview = parseAIReviewResponse(commit);
-                if (parsedReview.comments.length > 0)
+                if (parsedReview.comments.length > 0) {
                     allComments.push(...parsedReview.comments);
-                if (parsedReview.body)
-                    allReviewBodies.push(`\n\n**File: ${item.path}**\n${parsedReview.body}`);
+                }
+                // --- 修改点 2: 将文件路径和总结作为对象存入新数组 ---
+                if (parsedReview.body) {
+                    fileSummaries.push({ path: item.path, summary: parsedReview.body });
+                }
             }
             catch (e) {
                 console.error("aiGenerate:", e);
             }
         }
-        if (allComments.length > 0 || allReviewBodies.length > 0) {
+        // Batch Submit
+        if (allComments.length > 0 || fileSummaries.length > 0) {
             let Review = useChinese ? "审核结果" : "Review";
-            let aggregatedBody = `# ${Review} Summary\n` + allReviewBodies.join("\n---\n");
+            let aggregatedBody = `# ${Review} Summary\n\n`;
+            // --- 修改点 3: 格式化总结为一个 Markdown 列表 ---
+            if (fileSummaries.length > 0) {
+                const summaryContent = fileSummaries.map(s => {
+                    // 将多行总结合并为一行，使其在列表中更好看
+                    const singleLineSummary = s.summary.replace(/\n/g, ' ');
+                    return `*   **${s.path}**: ${singleLineSummary}`;
+                }).join('\n');
+                aggregatedBody += summaryContent;
+            }
             let event = (allComments.length === 0 && aggregatedBody.includes("LGTM")) ? 'APPROVE' : 'COMMENT';
-            if (allComments.length > 0)
+            if (allComments.length > 0) {
                 event = 'COMMENT';
-            else if (allReviewBodies.length === 0) {
-                console.log("Skipping.");
+            }
+            else if (fileSummaries.length === 0) {
+                console.log("No review content generated. Skipping.");
                 return;
             }
             console.log(`[INFO] Submitting batch review with ${allComments.length} comments.`);
             let resp = await submitPullRequestReview(aggregatedBody, event, allComments, process.env.GITHUB_SHA);
-            if (!resp.id)
-                throw new Error("Submit PR Review error");
-            console.log("Submit PR Review success: ", resp.id);
+            if (!resp.id) {
+                throw new Error(useChinese ? "提交PR Review失败" : "Submit PR Review error");
+            }
+            console.log(useChinese ? "提交PR Review成功：" : "Submit PR Review success: ", resp.id);
         }
         else {
-            console.log("No review to submit.");
+            console.log("No review to submit (LGTM or empty).");
         }
     }
     catch (error) {
-        console.error('Error:', error);
-        process.exit(1);
+        console.error('Error executing git diff:', error);
+        process.exit(1); // error exit
     }
 }
 aiCheckDiffContext()
