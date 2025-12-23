@@ -60,7 +60,6 @@ result：
 
 ![actions.run.png](assets/actions.run.png)
 ![review.comments.1.png](assets/review.comments.1.png)
-![review.comments.2.png](assets/review.comments.2.png)
 
 ## Star History
 
