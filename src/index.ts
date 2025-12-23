@@ -2,35 +2,53 @@ import {execSync} from "node:child_process";
 import {doesAnyPatternMatch, post, split_message} from "./utils";
 import {take_system_prompt} from "./prompt";
 
-function parseAIReviewResponse(aiResponse: string): { body: string, comments: Array<{ path: string, line: number, start_line?: number, body: string }> } {
-  const parts = aiResponse.split(/\n---+\n/); // Split by "---" on its own line
-  let mainBody = parts[0].trim();
+// --- FIX 1: 重写解析逻辑 ---
+// 解决 "开头的解析也不太对" 和 "第一条评论未识别导致行号失效" 的问题
+function parseAIReviewResponse(aiResponse: string): {
+  body: string,
+  comments: Array<{ path: string, line: number, start_line?: number, body: string }>
+} {
+  // 允许 --- 前后有换行符
+  const parts = aiResponse.split(/\n\s*---+\s*\n/);
+  let mainBody = "";
   const lineComments: Array<{ path: string, line: number, start_line?: number, body: string }> = [];
 
   for (let i = 0; i < parts.length; i++) {
     const commentPart = parts[i].trim();
     if (!commentPart) continue;
 
+    // 尝试匹配结构化评论
+    // 使用 multiline 模式 (^...$m) 确保匹配行首行尾
     const filePathMatch = commentPart.match(/^File:\s*(.*)$/m);
     const startLineMatch = commentPart.match(/^StartLine:\s*(\d+)$/m);
     const endLineMatch = commentPart.match(/^(?:End)?Line:\s*(\d+)$/m);
     const commentBodyMatch = commentPart.match(/^Comment:\s*([\s\S]*)$/m);
 
+    // 只有当核心字段都存在时，才视为代码评论
     if (filePathMatch && endLineMatch && commentBodyMatch) {
       const line = parseInt(endLineMatch[1]);
       const start_line = startLineMatch ? parseInt(startLineMatch[1]) : line;
-      
+
       lineComments.push({
         path: filePathMatch[1].trim(),
         line: line,
         start_line: start_line !== line ? start_line : undefined,
         body: commentBodyMatch[1].trim()
       });
-    } else if (!filePathMatch && !mainBody && commentPart.length > 0 && !commentPart.startsWith("LGTM")) {
-        mainBody = commentPart;
+    } else {
+      // 既不是结构化评论，也不是空的，且不单纯是 "LGTM"，则归为 Summary
+      // 防止 Summary 把 "File:..." 这种元数据吃进去
+      if (!commentPart.startsWith("File:") && !commentPart.startsWith("LGTM")) {
+        if (mainBody) {
+          mainBody += "\n\n" + commentPart;
+        } else {
+          mainBody = commentPart;
+        }
+      }
     }
   }
-  return { body: mainBody, comments: lineComments };
+
+  return {body: mainBody, comments: lineComments};
 }
 
 let useChinese = (process.env.INPUT_CHINESE || "true").toLowerCase() != "false"; // use chinese
@@ -45,15 +63,15 @@ const review_pull_request = (!process.env.INPUT_REVIEW_PULL_REQUEST) ? false : (
 const system_prompt = reviewers_prompt || take_system_prompt(prompt_genre, language);
 
 // 获取输入参数
-const url = process.env.INPUT_HOST; // INPUT_HOST 是从 action.yml 中定义的输入
+const url = process.env.INPUT_HOST;
 if (!url) {
   console.error('HOST input is required.');
-  process.exit(1);  // 退出程序，返回错误代码
+  process.exit(1);
 }
-const model = process.env.INPUT_MODEL; // INPUT_HOST 是从 action.yml 中定义的输入
+const model = process.env.INPUT_MODEL;
 if (!model) {
   console.error('model input is required.');
-  process.exit(1);  // 退出程序，返回错误代码
+  process.exit(1);
 }
 
 
@@ -65,27 +83,31 @@ async function submitPullRequestReview(
 ): Promise<any> {
   if (!process.env.INPUT_PULL_REQUEST_NUMBER) {
     console.log(message);
-    return { id: 0 };
+    return {id: 0};
   }
 
-  const body: any = { 
-    body: message, 
-    event: event, 
-    commit_id: commit_id 
+  const body: any = {
+    body: message,
+    event: event,
+    commit_id: commit_id
   };
-  
+
   if (comments.length > 0) {
     body.comments = comments.map(comment => {
-        let commentBody = comment.body;
-        if (comment.start_line && comment.start_line !== comment.line) {
-            commentBody = `[Lines ${comment.start_line}-${comment.line}] ${commentBody}`;
-        }
-        
-        return {
-            path: comment.path,
-            new_position: comment.line, 
-            body: commentBody
-        };
+      let commentBody = comment.body;
+      // 因为 Gitea Swagger 定义里只有 new_position/old_position，没有 start_line 字段
+      // 所以我们把行号范围写在评论内容里
+      if (comment.start_line && comment.start_line !== comment.line) {
+        commentBody = `[Lines ${comment.start_line}-${comment.line}] ${commentBody}`;
+      }
+
+      // --- FIX 2: 严格按照 Swagger 定义 ---
+      return {
+        path: comment.path,
+        new_position: comment.line, // 对应 Swagger 中的 new_position (integer)
+        body: commentBody
+        // Gitea 默认为新文件/修改后的行，不需要传 old_position 除非是针对删除行的评论
+      };
     });
   }
 
@@ -140,7 +162,6 @@ async function getPrDiffContext() {
     const diffOutput = execSync(`git diff --name-only origin/${BASE_REF}...HEAD`, {encoding: 'utf-8'});
     let files = diffOutput.trim().split("\n");
     for (let key in files) {
-      // noinspection DuplicatedCode
       if (!files[key]) continue;
       if ((include_files.length > 0) && (!doesAnyPatternMatch(include_files, files[key]))) {
         console.log("exclude(include):", files[key])
@@ -165,12 +186,10 @@ async function getPrDiffContext() {
 async function getHeadDiffContext() {
   let items = [];
   try {
-    // exec git diff get diff files
     const diffCommand = process.platform === 'win32' ? 'HEAD~1' : 'HEAD^';
     const diffOutput = execSync(`git diff --name-only ${diffCommand}`, {encoding: 'utf-8'});
     let files = diffOutput.trim().split("\n");
     for (let key in files) {
-      // noinspection DuplicatedCode
       if (!files[key]) continue;
       if ((include_files.length > 0) && (!doesAnyPatternMatch(include_files, files[key]))) {
         console.log("exclude(include):", files[key])
@@ -194,9 +213,8 @@ async function getHeadDiffContext() {
 
 async function aiCheckDiffContext() {
   try {
-    let commit_sha_url = `${process.env.GITHUB_SERVER_URL}/${process.env.INPUT_REPOSITORY}/src/commit/${process.env.GITHUB_SHA}`;
     let items: Array<any> = review_pull_request ? await getPrDiffContext() : await getHeadDiffContext();
-    
+
     let allComments: Array<{ path: string, line: number, start_line?: number, body: string }> = [];
     let allReviewBodies: string[] = [];
 
@@ -213,14 +231,14 @@ async function aiCheckDiffContext() {
           model: model,
           system: system_prompt
         })
-        
+
         if (!response.choices || response.choices.length === 0 || !response.choices[0].message) {
-           console.error("OpenAI response error:", response);
-           throw "OpenAI/Ollama response error";
+          console.error("OpenAI response error:", response);
+          throw "OpenAI/Ollama response error";
         }
-        
+
         let commit: string = response.choices[0].message.content;
-        
+
         // Greedy parsing: Try to strip markdown code block wrapper if present
         commit = commit.trim();
         const match = commit.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
@@ -230,12 +248,13 @@ async function aiCheckDiffContext() {
 
         const parsedReview = parseAIReviewResponse(commit);
         if (parsedReview.comments.length > 0) {
-            allComments.push(...parsedReview.comments);
+          allComments.push(...parsedReview.comments);
         }
+        // 只有当有实质性内容时才添加到 Summary
         if (parsedReview.body) {
-            allReviewBodies.push(`\n\n**File: ${item.path}**\n${parsedReview.body}`);
+          allReviewBodies.push(`\n\n**File: ${item.path}**\n${parsedReview.body}`);
         }
-        
+
       } catch (e) {
         console.error("aiGenerate:", e)
       }
@@ -243,27 +262,27 @@ async function aiCheckDiffContext() {
 
     // Batch Submit
     if (allComments.length > 0 || allReviewBodies.length > 0) {
-        let Review = useChinese ? "审核结果" : "Review";
-        let aggregatedBody = `# ${Review} Summary\n` + allReviewBodies.join("\n---\n");
-        let event: 'APPROVE' | 'COMMENT' = (allComments.length === 0 && aggregatedBody.includes("LGTM")) ? 'APPROVE' : 'COMMENT';
-        
-        if (allComments.length > 0) {
-             event = 'COMMENT'; 
-        } else if (allReviewBodies.length === 0) {
-             console.log("No review content generated. Skipping.");
-             return;
-        }
+      let Review = useChinese ? "审核结果" : "Review";
+      let aggregatedBody = `# ${Review} Summary\n` + allReviewBodies.join("\n---\n");
+      let event: 'APPROVE' | 'COMMENT' = (allComments.length === 0 && aggregatedBody.includes("LGTM")) ? 'APPROVE' : 'COMMENT';
 
-        console.log(`[INFO] Submitting batch review with ${allComments.length} comments.`);
-        
-        let resp = await submitPullRequestReview(aggregatedBody, event, allComments, process.env.GITHUB_SHA as string);
-        
-        if (!resp.id) {
-          throw new Error(useChinese ? "提交PR Review失败" : "Submit PR Review error")
-        }
-        console.log(useChinese ? "提交PR Review成功：" : "Submit PR Review success: ", resp.id)
+      if (allComments.length > 0) {
+        event = 'COMMENT';
+      } else if (allReviewBodies.length === 0) {
+        console.log("No review content generated. Skipping.");
+        return;
+      }
+
+      console.log(`[INFO] Submitting batch review with ${allComments.length} comments.`);
+
+      let resp = await submitPullRequestReview(aggregatedBody, event, allComments, process.env.GITHUB_SHA as string);
+
+      if (!resp.id) {
+        throw new Error(useChinese ? "提交PR Review失败" : "Submit PR Review error")
+      }
+      console.log(useChinese ? "提交PR Review成功：" : "Submit PR Review success: ", resp.id)
     } else {
-        console.log("No review to submit (LGTM or empty).");
+      console.log("No review to submit (LGTM or empty).");
     }
 
   } catch (error) {
