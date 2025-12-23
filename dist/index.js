@@ -62,11 +62,17 @@ async function submitPullRequestReview(message, event, comments = [], commit_id)
         commit_id: commit_id
     };
     if (comments.length > 0) {
-        body.comments = comments.map(comment => ({
-            path: comment.path,
-            new_position: comment.line,
-            body: comment.body
-        }));
+        body.comments = comments.map(comment => {
+            let commentBody = comment.body;
+            if (comment.start_line && comment.start_line !== comment.line) {
+                commentBody = `[Lines ${comment.start_line}-${comment.line}] ${commentBody}`;
+            }
+            return {
+                path: comment.path,
+                new_position: comment.line,
+                body: commentBody
+            };
+        });
     }
     return await (0, utils_1.post)({
         url: `${process.env.GITHUB_API_URL}/repos/${process.env.INPUT_REPOSITORY}/pulls/${process.env.INPUT_PULL_REQUEST_NUMBER}/reviews`,

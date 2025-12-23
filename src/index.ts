@@ -75,11 +75,18 @@ async function submitPullRequestReview(
   };
   
   if (comments.length > 0) {
-    body.comments = comments.map(comment => ({
-        path: comment.path,
-        new_position: comment.line, 
-        body: comment.body
-    }));
+    body.comments = comments.map(comment => {
+        let commentBody = comment.body;
+        if (comment.start_line && comment.start_line !== comment.line) {
+            commentBody = `[Lines ${comment.start_line}-${comment.line}] ${commentBody}`;
+        }
+        
+        return {
+            path: comment.path,
+            new_position: comment.line, 
+            body: commentBody
+        };
+    });
   }
 
   return await post({
