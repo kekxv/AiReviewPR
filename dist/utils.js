@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.post = exports.doesAnyPatternMatch = exports.split_message = void 0;
+exports.parseAIReviewResponse = exports.post = exports.doesAnyPatternMatch = exports.split_message = void 0;
 const http_1 = __importDefault(require("http"));
 const https_1 = __importDefault(require("https"));
 function split_message(files) {
@@ -114,3 +114,53 @@ async function post({ url, body, header, json }) {
     });
 }
 exports.post = post;
+function parseAIReviewResponse(aiResponse) {
+    // --- 1. 预处理 ---
+    // 1.1 移除 <think>...</think> 思考过程
+    let cleanResponse = aiResponse.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    // 1.2 移除末尾的 LGTM 标记
+    // 解释：匹配 (换行 或 字符串开头) + 空格 + LGTM + 空格 + 字符串结尾
+    // 这样无论 LGTM 是单独一行，还是紧接在 Summary 后面，都会被剔除
+    cleanResponse = cleanResponse.replace(/(^|\n)\s*LGTM\s*$/i, "").trim();
+    // --- 2. 分割逻辑 ---
+    const parts = cleanResponse.split(/^\s*---+\s*$/gm);
+    let mainBody = "";
+    const lineComments = [];
+    for (const part of parts) {
+        const block = part.trim();
+        if (!block)
+            continue;
+        // --- 3. 特征检测 ---
+        const hasFile = /^(?:File|文件)\s*[:：]/im.test(block);
+        const hasComment = /^(?:Comment|Review|评论|注释)\s*[:：]/im.test(block);
+        if (hasFile && hasComment) {
+            // === 解析 Issue Block ===
+            const filePathMatch = block.match(/^(?:File|文件)\s*[:：]\s*(.*)$/im);
+            const startLineMatch = block.match(/^(?:StartLine|Start\s*Line|起始行号|开始行号)\s*[:：]\s*(\d+)$/im);
+            const endLineMatch = block.match(/^(?:(?:End)?Line|End\s*Line|结束行号)\s*[:：]\s*(\d+)$/im);
+            const commentBodyMatch = block.match(/^(?:Comment|Review|评论|注释)\s*[:：]\s*([\s\S]*)$/im);
+            if (filePathMatch && endLineMatch && commentBodyMatch) {
+                const endLine = parseInt(endLineMatch[1], 10);
+                const startLine = startLineMatch ? parseInt(startLineMatch[1], 10) : endLine;
+                lineComments.push({
+                    path: filePathMatch[1].trim(),
+                    line: endLine,
+                    start_line: startLine !== endLine ? startLine : undefined,
+                    body: commentBodyMatch[1].trim()
+                });
+            }
+        }
+        else {
+            // === 解析 Summary ===
+            // 因为前面已经全局移除了 LGTM，这里不再需要特殊判断 block === "LGTM"
+            if (!block.startsWith("File:")) {
+                if (mainBody)
+                    mainBody += "\n\n" + block;
+                else
+                    mainBody = block;
+            }
+        }
+    }
+    return { body: mainBody.trim(), comments: lineComments };
+}
+exports.parseAIReviewResponse = parseAIReviewResponse;
