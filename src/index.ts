@@ -1,6 +1,5 @@
 import {execSync} from "node:child_process";
-import {doesAnyPatternMatch, post, split_message} from "./utils";
-import {take_system_prompt} from "./prompt";
+import {doesAnyPatternMatch, parseAIReviewResponse, post, split_message} from "./utils";
 
 function addLineNumbersToDiff(diff: string): string {
   const lines = diff.split('\n');
@@ -38,47 +37,6 @@ function addLineNumbersToDiff(diff: string): string {
   return result.join('\n');
 }
 
-function parseAIReviewResponse(aiResponse: string): { body: string, comments: Array<{ path: string, line: number, start_line?: number, body: string }> } {
-  const parts = aiResponse.split(/\n\s*---+\s*\n/);
-  let mainBody = "";
-  const lineComments: Array<{ path: string, line: number, start_line?: number, body: string }> = [];
-
-  for (let i = 0; i < parts.length; i++) {
-    const commentPart = parts[i].trim();
-    if (!commentPart) continue;
-
-    // --- 正则优化 ---
-    // 1. 忽略大小写 (i flag)
-    // 2. 允许英文冒号(:) 或 中文冒号(：)
-    // 3. 兼容 AI 有时候会把 Key 翻译的情况 (但主要靠 Prompt 约束)
-    const filePathMatch = commentPart.match(/^(?:File|文件)\s*[:：]\s*(.*)$/im);
-    const contextMatch = commentPart.match(/^(?:Context|内容|上下文)\s*[:：]\s*(.*)$/im); // 虽不使用但需兼容格式
-    const startLineMatch = commentPart.match(/^(?:StartLine|Start\s*Line|起始行号|开始行号)\s*[:：]\s*(\d+)$/im);
-    const endLineMatch = commentPart.match(/^(?:(?:End)?Line|End\s*Line|结束行号)\s*[:：]\s*(\d+)$/im);
-    const commentBodyMatch = commentPart.match(/^(?:Comment|Review|评论|注释)\s*[:：]\s*([\s\S]*)$/im);
-
-    if (filePathMatch && endLineMatch && commentBodyMatch) {
-      const line = parseInt(endLineMatch[1]);
-      const start_line = startLineMatch ? parseInt(startLineMatch[1]) : line;
-
-      lineComments.push({
-        path: filePathMatch[1].trim(),
-        line: line,
-        start_line: start_line !== line ? start_line : undefined,
-        body: commentBodyMatch[1].trim()
-      });
-    } else {
-      // 如果匹配不到 Key，归为 Summary
-      // 过滤掉单纯的 "LGTM" 或疑似 Key 的行
-      if (!commentPart.match(/^File[:：]/i) && !commentPart.startsWith("LGTM")) {
-        if (mainBody) mainBody += "\n\n" + commentPart;
-        else mainBody = commentPart;
-      }
-    }
-  }
-  return { body: mainBody, comments: lineComments };
-}
-
 let useChinese = (process.env.INPUT_CHINESE || "true").toLowerCase() != "false";
 const language = !process.env.INPUT_CHINESE ? (process.env.INPUT_LANGUAGE || "Chinese") : (useChinese ? "Chinese" : "English");
 const prompt_genre = (process.env.INPUT_PROMPT_GENRE || "");
@@ -90,40 +48,43 @@ const review_pull_request = (!process.env.INPUT_REVIEW_PULL_REQUEST) ? false : (
 
 function system_prompt_numbered(language: string) {
   return `
-You are a senior code reviewer. Review the provided git diffs.
+You are a pragmatic Senior Technical Lead. Review the provided git diffs focusing on logic, security, performance, and maintainability.
 
-**IMPORTANT: The code has been pre-processed with line numbers (e.g., "Line 12: + const a = 1;").**
+**INPUT CONTEXT:**
+The code is pre-processed with line numbers (e.g., "Line 12: + const a = 1;").
 
-**STRICT RULES:**
-1. **Line Validation:** You MUST verify the line number matches the code. Copy the exact code into the "Context" field.
-2. **Language:** Write the *content* of the comments in ${language}.
-3. **Format Keys:** **KEEP ALL KEYS IN ENGLISH** (File, Context, StartLine, EndLine, Comment). **DO NOT TRANSLATE KEYS.**
-4. **Separators:** Use '---' strictly between issues.
+**REVIEW GUIDELINES:**
+1. **Filter Noise:** Ignore minor formatting/style issues (Prettier/ESLint) unless they affect logic.
+2. **Threshold:** Only report issues with **Score >= 2**. Ignore trivial nitpicks.
+3. **Context:** The "Context" field must be an EXACT COPY of the source line including the "Line X:" prefix.
+4. **Language:** Write the *content* of the comments in ${language}.
 
-**Instructions:**
-1. **Summary:** First, provide a brief summary of changes in ${language}.
-2. **Issues:** List specific issues using the strict format below.
+**SCORING LEGEND:**
+- [Score: 5] Critical (Security hole, crash, data loss).
+- [Score: 4] Major (Logic error, performance bottleneck).
+- [Score: 3] Moderate (Bad practice, maintainability).
+- [Score: 2] Minor (Optimization suggestion).
 
-**Strict Output Format:**
+**LGTM LOGIC (Crucial):**
+- If the code looks good and **NO issues with Score >= 2** are found, output the Summary followed strictly by the text "**LGTM**".
+- Do NOT output any "File/Context/Comment" blocks in this case.
 
-<Summary text here...>
+**OUTPUT FORMAT:**
 
+<Brief Summary of changes in ${language}>
+
+<If issues exist:>
 ---
 File: <file_path>
-Context: <COPY the exact code line from the diff here>
+Context: <EXACT COPY from diff>
 StartLine: <number>
 EndLine: <number>
-Comment: [Score: 1-5] <comment content in ${language}>
+Comment: [Score: 2-5] <Concise comment in ${language}>
 ---
 
-**Example:**
----
-File: src/main.js
-Context: Line 10: + console.log("debug");
-StartLine: 10
-EndLine: 10
-Comment: [Score: 2] 生产环境不建议保留 console.log，建议删除。
----
+<If NO issues exist:>
+LGTM
+
 `;
 }
 
@@ -295,7 +256,7 @@ async function aiCheckDiffContext() {
 
         // --- 修改点 2: 将文件路径和总结作为对象存入新数组 ---
         if (parsedReview.body) {
-          fileSummaries.push({ path: item.path, summary: parsedReview.body });
+          fileSummaries.push({path: item.path, summary: parsedReview.body});
         }
 
       } catch (e) {

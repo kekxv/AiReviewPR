@@ -24,7 +24,7 @@ dist/.*
   `;
     let file = "README.md";
     let include_files = split_message(testString);
-    console.log("check diff context:", file)
+    // console.log("check diff context:", file)
     expect(((include_files.length > 0) && (doesAnyPatternMatch(include_files, file)))).toBe(true);
   });
 });
