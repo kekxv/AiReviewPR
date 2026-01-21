@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const node_child_process_1 = require("node:child_process");
 const utils_1 = require("./utils");
+// --- 辅助函数：给 Diff 增加行号 ---
 function addLineNumbersToDiff(diff) {
     const lines = diff.split('\n');
     let result = [];
@@ -20,7 +21,6 @@ function addLineNumbersToDiff(diff) {
             continue;
         }
         if (line.startsWith('+')) {
-            // 这里的改变：加了 "Line " 前缀，更醒目
             result.push(`Line ${currentNewLine}: ${line}`);
             if (currentNewLine !== null)
                 currentNewLine++;
@@ -39,6 +39,7 @@ function addLineNumbersToDiff(diff) {
     }
     return result.join('\n');
 }
+// --- 读取配置 ---
 let useChinese = (process.env.INPUT_CHINESE || "true").toLowerCase() != "false";
 const language = !process.env.INPUT_CHINESE ? (process.env.INPUT_LANGUAGE || "Chinese") : (useChinese ? "Chinese" : "English");
 const prompt_genre = (process.env.INPUT_PROMPT_GENRE || "");
@@ -46,7 +47,11 @@ const reviewers_prompt = (process.env.INPUT_REVIEWERS_PROMPT || "");
 useChinese = language.toLowerCase() === "chinese";
 const include_files = (0, utils_1.split_message)(process.env.INPUT_INCLUDE_FILES || "");
 const exclude_files = (0, utils_1.split_message)(process.env.INPUT_EXCLUDE_FILES || "");
-const review_pull_request = (!process.env.INPUT_REVIEW_PULL_REQUEST) ? false : (process.env.INPUT_REVIEW_PULL_REQUEST.toLowerCase() === "true");
+// 读取事件信息
+const event_action = process.env.INPUT_EVENT_ACTION || "";
+const event_before = process.env.INPUT_EVENT_BEFORE || "";
+// 强制全量审查开关
+const force_full_review = (process.env.INPUT_REVIEW_PULL_REQUEST || "false").toLowerCase() === "true";
 function system_prompt_numbered(language) {
     return `
 You are a pragmatic Senior Technical Lead. Review the provided git diffs focusing on logic, security, performance, and maintainability.
@@ -99,6 +104,7 @@ if (!model) {
     console.error('model input is required.');
     process.exit(1);
 }
+// --- API 交互逻辑 ---
 async function submitPullRequestReview(message, event, comments = [], commit_id) {
     if (!process.env.INPUT_PULL_REQUEST_NUMBER) {
         console.log(message);
@@ -115,11 +121,9 @@ async function submitPullRequestReview(message, event, comments = [], commit_id)
             if (comment.start_line && comment.start_line !== comment.line) {
                 commentBody = `[Lines ${comment.start_line}-${comment.line}] ${commentBody}`;
             }
-            // --- FIX 3: 严格匹配 Gitea Swagger，移除 side 参数 ---
             return {
                 path: comment.path,
                 new_position: comment.line,
-                // 移除 side: "RIGHT" 防止兼容性问题
                 body: commentBody
             };
         });
@@ -147,71 +151,122 @@ async function aiGenerate({ host, token, prompt, model, system }) {
         top_p: 1,
     });
     const headers = {};
-    if (token)
+    if (token && token.trim() !== "")
         headers['Authorization'] = `Bearer ${token}`;
     return await (0, utils_1.post)({ url: endpoint, body: data, header: headers });
 }
-async function getPrDiffContext() {
-    let items = [];
-    const BASE_REF = process.env.INPUT_BASE_REF;
+// --- Git 操作核心逻辑 (针对大仓库优化) ---
+/**
+ * 辅助函数：按需拉取指定 Commit 或分支
+ * 避免 fetch-depth: 0 导致的慢速
+ */
+function fetchTarget(target) {
     try {
-        (0, node_child_process_1.execSync)(`git fetch origin ${BASE_REF}`, { encoding: 'utf-8' });
-        const diffOutput = (0, node_child_process_1.execSync)(`git diff --name-only origin/${BASE_REF}...HEAD`, { encoding: 'utf-8' });
+        // 尝试以 depth=1 拉取特定 ref，极快
+        (0, node_child_process_1.execSync)(`git fetch origin ${target} --depth=1`, { stdio: 'ignore' });
+        return true;
+    }
+    catch (e) {
+        // 部分 Git Server 可能不支持 fetch specific SHA，或者网络问题
+        console.warn(`[WARN] Failed to shallow fetch ${target}.`);
+        return false;
+    }
+}
+/**
+ * 检查 commit 在本地是否存在
+ */
+function commitExists(sha) {
+    try {
+        (0, node_child_process_1.execSync)(`git cat-file -t ${sha}`, { stdio: 'ignore' });
+        return true;
+    }
+    catch (e) {
+        return false;
+    }
+}
+/**
+ * 智能获取 Diff 上下文
+ * 自动判断是增量对比还是全量对比，并处理 git fetch
+ */
+async function getSmartDiffContext() {
+    let items = [];
+    const BASE_REF = process.env.INPUT_BASE_REF || "";
+    let startPoint = "";
+    let endPoint = "HEAD";
+    let isIncremental = false;
+    console.log(`[INFO] Event: ${event_action}, ForceFull: ${force_full_review}, Before: ${event_before}`);
+    // 1. 判断模式
+    if (!force_full_review && event_action === "synchronize" && event_before && event_before !== "null") {
+        // 增量模式：对比 上次提交 ... 本次提交
+        startPoint = event_before;
+        isIncremental = true;
+        console.log(`[INFO] Mode: Incremental Review (${startPoint} -> ${endPoint})`);
+        // 如果本地没有旧 commit，尝试拉取
+        if (!commitExists(startPoint)) {
+            console.log(`[INFO] Fetching missing commit: ${startPoint}`);
+            fetchTarget(startPoint);
+        }
+    }
+    else {
+        // 全量模式：对比 目标分支 ... 本次提交
+        startPoint = `origin/${BASE_REF}`;
+        console.log(`[INFO] Mode: Full Review (${startPoint} -> ${endPoint})`);
+        // 确保本地有 base 分支的信息
+        fetchTarget(BASE_REF);
+    }
+    // 2. 容错回退
+    // 如果增量 fetch 失败（比如 GitHub 删除掉了孤儿 commit），回退到全量
+    if (isIncremental && !commitExists(startPoint)) {
+        console.warn(`[WARN] Previous commit ${startPoint} not found. Fallback to Full Review.`);
+        startPoint = `origin/${BASE_REF}`;
+        fetchTarget(BASE_REF);
+        isIncremental = false;
+    }
+    try {
+        // 3. 执行 Diff
+        // 使用空格分隔 (A B) 而不是三点 (A...B)，支持 shallow clone
+        const diffCmd = `git diff --name-only "${startPoint}" "${endPoint}"`;
+        const diffOutput = (0, node_child_process_1.execSync)(diffCmd, { encoding: 'utf-8' });
         let files = diffOutput.trim().split("\n");
         for (let key in files) {
-            if (!files[key])
+            const filePath = files[key];
+            if (!filePath)
                 continue;
-            if ((include_files.length > 0) && (!(0, utils_1.doesAnyPatternMatch)(include_files, files[key])))
+            // 过滤文件
+            if ((include_files.length > 0) && (!(0, utils_1.doesAnyPatternMatch)(include_files, filePath)))
                 continue;
-            else if ((exclude_files.length > 0) && ((0, utils_1.doesAnyPatternMatch)(exclude_files, files[key])))
+            else if ((exclude_files.length > 0) && ((0, utils_1.doesAnyPatternMatch)(exclude_files, filePath)))
                 continue;
-            const fileDiffOutput = (0, node_child_process_1.execSync)(`git diff origin/${BASE_REF}...HEAD -- "${files[key]}"`, { encoding: 'utf-8' });
-            // --- FIX 4: 调用预处理函数 ---
+            // 获取具体内容 Diff
+            const fileDiffCmd = `git diff "${startPoint}" "${endPoint}" -- "${filePath}"`;
+            const fileDiffOutput = (0, node_child_process_1.execSync)(fileDiffCmd, { encoding: 'utf-8' });
             const numberedDiff = addLineNumbersToDiff(fileDiffOutput);
-            items.push({
-                path: files[key],
-                context: numberedDiff, // 发送带行号的 Diff 给 AI
-            });
+            if (numberedDiff.trim().length > 0) {
+                items.push({
+                    path: filePath,
+                    context: numberedDiff,
+                });
+            }
         }
     }
     catch (error) {
-        console.error('Error executing git diff:', error);
+        console.error(`[ERROR] Git diff failed.`, error);
+        // 这里的错误通常是严重的 Git 环境问题
     }
-    return items;
+    return { items, isIncremental };
 }
-async function getHeadDiffContext() {
-    let items = [];
-    try {
-        const diffCommand = process.platform === 'win32' ? 'HEAD~1' : 'HEAD^';
-        const diffOutput = (0, node_child_process_1.execSync)(`git diff --name-only ${diffCommand}`, { encoding: 'utf-8' });
-        let files = diffOutput.trim().split("\n");
-        for (let key in files) {
-            if (!files[key])
-                continue;
-            if ((include_files.length > 0) && (!(0, utils_1.doesAnyPatternMatch)(include_files, files[key])))
-                continue;
-            else if ((exclude_files.length > 0) && ((0, utils_1.doesAnyPatternMatch)(exclude_files, files[key])))
-                continue;
-            const fileDiffOutput = (0, node_child_process_1.execSync)(`git diff ${diffCommand} -- "${files[key]}"`, { encoding: 'utf-8' });
-            // --- FIX 4: 调用预处理函数 ---
-            const numberedDiff = addLineNumbersToDiff(fileDiffOutput);
-            items.push({
-                path: files[key],
-                context: numberedDiff,
-            });
-        }
-    }
-    catch (error) {
-        console.error('Error executing git diff:', error);
-    }
-    return items;
-}
+// --- 主流程 ---
 async function aiCheckDiffContext() {
     try {
-        let items = review_pull_request ? await getPrDiffContext() : await getHeadDiffContext();
+        // 获取 Diff
+        const { items, isIncremental } = await getSmartDiffContext();
+        if (items.length === 0) {
+            console.log("No changes detected in filtered files. LGTM.");
+            return;
+        }
         let allComments = [];
-        // --- 修改点 1: 创建一个新的数组来分别存储文件总结 ---
         let fileSummaries = [];
+        // 遍历文件进行 AI 审查
         for (let key in items) {
             if (!items[key])
                 continue;
@@ -226,11 +281,12 @@ async function aiCheckDiffContext() {
                     system: system_prompt
                 });
                 if (!response.choices || response.choices.length === 0 || !response.choices[0].message) {
-                    console.error("OpenAI response error:", response);
-                    throw "OpenAI/Ollama response error";
+                    console.error("OpenAI response empty for file:", item.path);
+                    continue;
                 }
                 let commit = response.choices[0].message.content;
                 commit = commit.trim();
+                // 提取 Markdown 代码块内容
                 const match = commit.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
                 if (match) {
                     commit = match[2].trim();
@@ -239,23 +295,21 @@ async function aiCheckDiffContext() {
                 if (parsedReview.comments.length > 0) {
                     allComments.push(...parsedReview.comments);
                 }
-                // --- 修改点 2: 将文件路径和总结作为对象存入新数组 ---
                 if (parsedReview.body) {
                     fileSummaries.push({ path: item.path, summary: parsedReview.body });
                 }
             }
             catch (e) {
-                console.error("aiGenerate:", e);
+                console.error(`[ERROR] Failed to review ${item.path}:`, e);
             }
         }
-        // Batch Submit
+        // 提交结果
         if (allComments.length > 0 || fileSummaries.length > 0) {
             let Review = useChinese ? "审核结果" : "Review";
-            let aggregatedBody = `# ${Review} Summary\n\n`;
-            // --- 修改点 3: 格式化总结为一个 Markdown 列表 ---
+            const modeLabel = isIncremental ? "(Incremental/增量)" : "(Full/全量)";
+            let aggregatedBody = `# ${Review} Summary ${modeLabel}\n\n`;
             if (fileSummaries.length > 0) {
                 const summaryContent = fileSummaries.map(s => {
-                    // 将多行总结合并为一行，使其在列表中更好看
                     const singleLineSummary = s.summary.replace(/\n/g, ' ');
                     return `*   **${s.path}**: ${singleLineSummary}`;
                 }).join('\n');
@@ -266,10 +320,10 @@ async function aiCheckDiffContext() {
                 event = 'COMMENT';
             }
             else if (fileSummaries.length === 0) {
-                console.log("No review content generated. Skipping.");
+                console.log("No meaningful content generated. Skipping submit.");
                 return;
             }
-            console.log(`[INFO] Submitting batch review with ${allComments.length} comments.`);
+            console.log(`[INFO] Submitting batch review: ${allComments.length} comments.`);
             let resp = await submitPullRequestReview(aggregatedBody, event, allComments, process.env.GITHUB_SHA);
             if (!resp.id) {
                 throw new Error(useChinese ? "提交PR Review失败" : "Submit PR Review error");
@@ -277,12 +331,12 @@ async function aiCheckDiffContext() {
             console.log(useChinese ? "提交PR Review成功：" : "Submit PR Review success: ", resp.id);
         }
         else {
-            console.log("No review to submit (LGTM or empty).");
+            console.log("No review to submit (All files LGTM or empty).");
         }
     }
     catch (error) {
-        console.error('Error executing git diff:', error);
-        process.exit(1); // error exit
+        console.error('Error executing AI check:', error);
+        process.exit(1);
     }
 }
 aiCheckDiffContext()

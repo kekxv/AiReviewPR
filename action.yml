@@ -6,9 +6,6 @@ inputs:
   repository:
     description: 'Repository name with owner. For example, actions/checkout'
     default: ${{ github.repository }}
-  REVIEW_PULL_REQUEST:
-    description: 'Whether to compare the records from the beginning of the commit to the latest one; false indicates that only the most recent commit will be reviewed. 是否比对提交开始到最新的记录，false表示只审核最新一次提交审核'
-    default: false
   BASE_REF:
     description: 'github event pull_request base ref'
     default: ${{ github.event.pull_request.base.ref }}
@@ -61,6 +58,15 @@ inputs:
     description: 'Comma-separated list of files to exclude review'
     required: false
     default: " "  # 默认为空，表示不传递文件
+  EVENT_ACTION:
+    description: 'The event action (e.g., opened, synchronize)'
+    default: ${{ github.event.action }}
+  EVENT_BEFORE:
+    description: 'The previous commit SHA (for incremental diffs)'
+    default: ${{ github.event.before }}
+  REVIEW_PULL_REQUEST:
+    description: 'Force full review? true=Check all files; false=Check only changed files in this push'
+    default: "false"
 runs:
   using: node20
   main: 'dist/index.js'
