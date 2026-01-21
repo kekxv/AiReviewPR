@@ -355,8 +355,7 @@ async function aiCheckDiffContext() {
 
     if (allComments.length > 0 || fileSummaries.length > 0) {
       let Review = useChinese ? "审核结果" : "Review";
-      const modeLabel = isIncremental ? "(Incremental/增量)" : "(Full/全量)";
-      let body = `# ${Review} Summary ${modeLabel}\n\n`;
+      let body = `# ${Review} Summary\n\n`;
 
       if (fileSummaries.length > 0) {
         body += fileSummaries.map(s => `* **${s.path}**: ${s.summary.replace(/\n/g, ' ')}`).join('\n');
