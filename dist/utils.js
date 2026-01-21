@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.parseAIReviewResponse = exports.post = exports.doesAnyPatternMatch = exports.split_message = void 0;
+exports.parseAIReviewResponse = exports.get = exports.post = exports.doesAnyPatternMatch = exports.split_message = void 0;
 const http_1 = __importDefault(require("http"));
 const https_1 = __importDefault(require("https"));
 function split_message(files) {
@@ -114,6 +114,25 @@ async function post({ url, body, header, json }) {
     });
 }
 exports.post = post;
+async function get(url, headers) {
+    const client = url.startsWith('https') ? https_1.default : http_1.default;
+    return new Promise((resolve, reject) => {
+        const req = client.get(url, { headers }, (res) => {
+            let data = '';
+            res.on('data', (chunk) => data += chunk);
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(data));
+                }
+                catch (e) {
+                    reject(e);
+                }
+            });
+        });
+        req.on('error', (e) => reject(e));
+    });
+}
+exports.get = get;
 function parseAIReviewResponse(aiResponse) {
     // --- 1. 预处理 ---
     // 1.1 移除 <think>...</think> 思考过程

@@ -112,6 +112,24 @@ export async function post({url, body, header, json}: any): Promise<string> {
   });
 }
 
+export async function get(url: string, headers: any): Promise<any> {
+  const client = url.startsWith('https') ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = client.get(url, {headers}, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.on('error', (e) => reject(e));
+  });
+}
+
 export function parseAIReviewResponse(aiResponse: string): {
   body: string,
   comments: Array<{ path: string, line: number, start_line?: number, body: string }>
