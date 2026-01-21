@@ -112,8 +112,12 @@ async function getLastReviewedCommitId(): Promise<string | null> {
 
   console.log("[INFO] Trying to fetch previous reviews to determine start point...");
   try {
-    // Gitea/GitHub API: List reviews on a pull request
-    const apiUrl = `${process.env.GITHUB_API_URL}/repos/${process.env.INPUT_REPOSITORY}/pulls/${process.env.INPUT_PULL_REQUEST_NUMBER}/reviews`;
+
+    // 构造 URL，注意处理末尾斜杠
+    let baseUrl = process.env.GITHUB_API_URL || "";
+    if (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
+    const apiUrl = `${baseUrl}/repos/${process.env.INPUT_REPOSITORY}/pulls/${process.env.INPUT_PULL_REQUEST_NUMBER}/reviews`;
+    console.log(`[DEBUG] Fetching reviews from: ${apiUrl}`);
     const headers = {
       'Authorization': `token ${process.env.INPUT_TOKEN}`,
       'User-Agent': 'AiReviewPR-Action'
@@ -234,6 +238,7 @@ function commitExists(sha: string): boolean {
 /**
  * 智能获取 Diff 上下文
  */
+
 async function getSmartDiffContext() {
   let items = [];
   const BASE_REF = process.env.INPUT_BASE_REF || "";
@@ -242,18 +247,21 @@ async function getSmartDiffContext() {
   let endPoint = "HEAD";
   let isIncremental = false;
 
-  console.log(`[INFO] Event: ${event_action}, ForceFull: ${force_full_review}, Before from Payload: '${event_before}'`);
+  console.log(`[INFO] Event: '${event_action}', ForceFull: ${force_full_review}, Before from Payload: '${event_before}'`);
+
+  // 辅助判断：是否为同步事件 (兼容 synchronized 和 synchronize)
+  const isSyncEvent = event_action.includes("sync");
 
   // 1. 优先使用 Payload 中的 Before
-  if (!force_full_review && event_action === "synchronize" && event_before && event_before !== "null" && event_before.trim() !== "") {
+  if (!force_full_review && isSyncEvent && event_before && event_before !== "null" && event_before.trim() !== "") {
     startPoint = event_before;
     isIncremental = true;
-    console.log(`[INFO] Strategy: Standard Payload Payload.`);
+    console.log(`[INFO] Strategy: Standard Payload (Before: ${startPoint}).`);
   }
 
   // 2. Payload 缺失，尝试通过 API 查找上次 Review 的记录 (Gitea Fallback 终极方案)
-  else if (!force_full_review && event_action === "synchronize") {
-    console.log(`[INFO] Strategy: 'Before' missing. Querying API for last reviewed commit...`);
+  else if (!force_full_review && isSyncEvent) {
+    console.log(`[INFO] Strategy: 'Before' missing in ${event_action}. Querying API for last reviewed commit...`);
     const lastReviewedSha = await getLastReviewedCommitId();
 
     if (lastReviewedSha) {
@@ -261,21 +269,21 @@ async function getSmartDiffContext() {
       isIncremental = true;
       console.log(`[INFO] Found previous review at ${startPoint}. Doing Incremental Review from there.`);
     } else {
-      console.log(`[INFO] No previous review found via API. Must do Full Review.`);
-      // 这里没有 else，startPoint 保持空，下面会进入全量逻辑
+      console.log(`[INFO] No previous review found via API (First time review?). Must do Full Review.`);
     }
   }
 
   // 3. 执行逻辑
   if (isIncremental && startPoint) {
-    // 尝试拉取 startPoint
+    // 尝试拉取 startPoint (以防本地只有 shallow clone)
     if (!commitExists(startPoint)) {
+      console.log(`[INFO] Fetching start point ${startPoint}...`);
       fetchTarget(startPoint);
     }
 
-    // 再次确认是否存在 (可能因为 force push 导致旧 commit 丢失)
+    // 再次确认是否存在
     if (!commitExists(startPoint)) {
-      console.warn(`[WARN] Incremental start point ${startPoint} not reachable. Fallback to Full Review.`);
+      console.warn(`[WARN] Incremental start point ${startPoint} not reachable locally. Fallback to Full Review.`);
       isIncremental = false;
     }
   }
@@ -290,6 +298,7 @@ async function getSmartDiffContext() {
   try {
     console.log(`[INFO] Diff Range: ${startPoint} ... ${endPoint}`);
 
+    // 使用 git diff A B 模式
     const diffCmd = `git diff --name-only "${startPoint}" "${endPoint}"`;
     const diffOutput = execSync(diffCmd, {encoding: 'utf-8'});
     let files = diffOutput.trim().split("\n");
