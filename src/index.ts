@@ -1,7 +1,7 @@
 import {execSync} from "node:child_process";
-import {doesAnyPatternMatch, parseAIReviewResponse, post, split_message} from "./utils";
+import {doesAnyPatternMatch, parseAIReviewResponse, post, split_message, get} from "./utils"; // 确保 utils 里导出了 get 方法
 
-// --- 辅助函数：给 Diff 增加行号 ---
+// --- 辅助函数：给 Diff 增加行号  ---
 function addLineNumbersToDiff(diff: string): string {
   const lines = diff.split('\n');
   let result = [];
@@ -16,12 +16,10 @@ function addLineNumbersToDiff(diff: string): string {
       result.push(line);
       continue;
     }
-
     if (line.startsWith('---') || line.startsWith('+++')) {
       result.push(line);
       continue;
     }
-
     if (line.startsWith('+')) {
       result.push(`Line ${currentNewLine}: ${line}`);
       if (currentNewLine !== null) currentNewLine++;
@@ -90,7 +88,6 @@ Comment: [Score: 2-5] <Concise comment in ${language}>
 
 <If NO issues exist:>
 LGTM
-
 `;
 }
 
@@ -106,7 +103,53 @@ if (!model) {
   process.exit(1);
 }
 
-// --- API 交互逻辑 ---
+
+/**
+ * 获取该 PR 上一次被审查的 Commit ID
+ */
+async function getLastReviewedCommitId(): Promise<string | null> {
+  if (!process.env.INPUT_PULL_REQUEST_NUMBER) return null;
+
+  console.log("[INFO] Trying to fetch previous reviews to determine start point...");
+  try {
+    // Gitea/GitHub API: List reviews on a pull request
+    const apiUrl = `${process.env.GITHUB_API_URL}/repos/${process.env.INPUT_REPOSITORY}/pulls/${process.env.INPUT_PULL_REQUEST_NUMBER}/reviews`;
+    const headers = {
+      'Authorization': `token ${process.env.INPUT_TOKEN}`,
+      'User-Agent': 'AiReviewPR-Action'
+    };
+
+    // 如果 utils 里有 get 就用 get，没有就用 getRequest
+    // const reviews = await get({ url: apiUrl, headers: headers });
+    const reviews: any = await get(apiUrl, headers);
+
+    if (!Array.isArray(reviews) || reviews.length === 0) {
+      console.log("[INFO] No previous reviews found.");
+      return null;
+    }
+
+    // 找到最后一次由机器人或当前 Token 用户提交的 Review
+    // 通常 Gitea Actions 使用的 Token 用户名是 "gitea-actions" 或者 bot
+    // 这里我们简单起见，取时间最近的一次 review (不管是谁review的，这代表代码被看过)
+    // 或者你可以过滤: const myReviews = reviews.filter(r => r.user.login === 'gitea-actions');
+
+    // 倒序排列，取最新的
+    const sortedReviews = reviews.sort((a: any, b: any) => {
+      return new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime();
+    });
+
+    const lastReview = sortedReviews[0];
+
+    if (lastReview && lastReview.commit_id) {
+      console.log(`[INFO] Found last review on commit: ${lastReview.commit_id} (at ${lastReview.submitted_at})`);
+      return lastReview.commit_id;
+    }
+  } catch (e) {
+    console.warn("[WARN] Failed to fetch previous reviews via API:", e);
+  }
+  return null;
+}
+
 async function submitPullRequestReview(
   message: string,
   event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES',
@@ -167,30 +210,21 @@ async function aiGenerate({host, token, prompt, model, system}: any): Promise<an
   return await post({url: endpoint, body: data, header: headers})
 }
 
-// --- Git 操作核心逻辑 (针对大仓库优化) ---
+// --- Git 操作核心逻辑 ---
 
-/**
- * 辅助函数：按需拉取指定 Commit 或分支
- * 避免 fetch-depth: 0 导致的慢速
- */
-function fetchTarget(target: string): boolean {
+function fetchTarget(target: string, depth: number = 1): boolean {
   try {
-    // 尝试以 depth=1 拉取特定 ref，极快
-    execSync(`git fetch origin ${target} --depth=1`, {stdio: 'ignore'});
+    execSync(`git fetch origin ${target} --depth=${depth}`, {stdio: 'ignore'});
     return true;
   } catch (e) {
-    // 部分 Git Server 可能不支持 fetch specific SHA，或者网络问题
     console.warn(`[WARN] Failed to shallow fetch ${target}.`);
     return false;
   }
 }
 
-/**
- * 检查 commit 在本地是否存在
- */
 function commitExists(sha: string): boolean {
   try {
-    execSync(`git cat-file -t ${sha}`, {stdio: 'ignore'});
+    execSync(`git rev-parse --verify "${sha}"`, {stdio: 'ignore'});
     return true;
   } catch (e) {
     return false;
@@ -199,7 +233,6 @@ function commitExists(sha: string): boolean {
 
 /**
  * 智能获取 Diff 上下文
- * 自动判断是增量对比还是全量对比，并处理 git fetch
  */
 async function getSmartDiffContext() {
   let items = [];
@@ -209,41 +242,54 @@ async function getSmartDiffContext() {
   let endPoint = "HEAD";
   let isIncremental = false;
 
-  console.log(`[INFO] Event: ${event_action}, ForceFull: ${force_full_review}, Before: ${event_before}`);
+  console.log(`[INFO] Event: ${event_action}, ForceFull: ${force_full_review}, Before from Payload: '${event_before}'`);
 
-  // 1. 判断模式
-  if (!force_full_review && event_action === "synchronize" && event_before && event_before !== "null") {
-    // 增量模式：对比 上次提交 ... 本次提交
+  // 1. 优先使用 Payload 中的 Before
+  if (!force_full_review && event_action === "synchronize" && event_before && event_before !== "null" && event_before.trim() !== "") {
     startPoint = event_before;
     isIncremental = true;
-    console.log(`[INFO] Mode: Incremental Review (${startPoint} -> ${endPoint})`);
-
-    // 如果本地没有旧 commit，尝试拉取
-    if (!commitExists(startPoint)) {
-      console.log(`[INFO] Fetching missing commit: ${startPoint}`);
-      fetchTarget(startPoint);
-    }
-  } else {
-    // 全量模式：对比 目标分支 ... 本次提交
-    startPoint = `origin/${BASE_REF}`;
-    console.log(`[INFO] Mode: Full Review (${startPoint} -> ${endPoint})`);
-
-    // 确保本地有 base 分支的信息
-    fetchTarget(BASE_REF);
+    console.log(`[INFO] Strategy: Standard Payload Payload.`);
   }
 
-  // 2. 容错回退
-  // 如果增量 fetch 失败（比如 GitHub 删除掉了孤儿 commit），回退到全量
-  if (isIncremental && !commitExists(startPoint)) {
-    console.warn(`[WARN] Previous commit ${startPoint} not found. Fallback to Full Review.`);
+  // 2. Payload 缺失，尝试通过 API 查找上次 Review 的记录 (Gitea Fallback 终极方案)
+  else if (!force_full_review && event_action === "synchronize") {
+    console.log(`[INFO] Strategy: 'Before' missing. Querying API for last reviewed commit...`);
+    const lastReviewedSha = await getLastReviewedCommitId();
+
+    if (lastReviewedSha) {
+      startPoint = lastReviewedSha;
+      isIncremental = true;
+      console.log(`[INFO] Found previous review at ${startPoint}. Doing Incremental Review from there.`);
+    } else {
+      console.log(`[INFO] No previous review found via API. Must do Full Review.`);
+      // 这里没有 else，startPoint 保持空，下面会进入全量逻辑
+    }
+  }
+
+  // 3. 执行逻辑
+  if (isIncremental && startPoint) {
+    // 尝试拉取 startPoint
+    if (!commitExists(startPoint)) {
+      fetchTarget(startPoint);
+    }
+
+    // 再次确认是否存在 (可能因为 force push 导致旧 commit 丢失)
+    if (!commitExists(startPoint)) {
+      console.warn(`[WARN] Incremental start point ${startPoint} not reachable. Fallback to Full Review.`);
+      isIncremental = false;
+    }
+  }
+
+  // 4. 最终回退：全量审查
+  if (!isIncremental) {
     startPoint = `origin/${BASE_REF}`;
+    console.log(`[INFO] Mode: Full Review (Comparing against ${BASE_REF})`);
     fetchTarget(BASE_REF);
-    isIncremental = false;
   }
 
   try {
-    // 3. 执行 Diff
-    // 使用空格分隔 (A B) 而不是三点 (A...B)，支持 shallow clone
+    console.log(`[INFO] Diff Range: ${startPoint} ... ${endPoint}`);
+
     const diffCmd = `git diff --name-only "${startPoint}" "${endPoint}"`;
     const diffOutput = execSync(diffCmd, {encoding: 'utf-8'});
     let files = diffOutput.trim().split("\n");
@@ -252,11 +298,9 @@ async function getSmartDiffContext() {
       const filePath = files[key];
       if (!filePath) continue;
 
-      // 过滤文件
       if ((include_files.length > 0) && (!doesAnyPatternMatch(include_files, filePath))) continue;
       else if ((exclude_files.length > 0) && (doesAnyPatternMatch(exclude_files, filePath))) continue;
 
-      // 获取具体内容 Diff
       const fileDiffCmd = `git diff "${startPoint}" "${endPoint}" -- "${filePath}"`;
       const fileDiffOutput = execSync(fileDiffCmd, {encoding: 'utf-8'});
 
@@ -271,7 +315,6 @@ async function getSmartDiffContext() {
     }
   } catch (error) {
     console.error(`[ERROR] Git diff failed.`, error);
-    // 这里的错误通常是严重的 Git 环境问题
   }
   return {items, isIncremental};
 }
@@ -280,7 +323,6 @@ async function getSmartDiffContext() {
 // --- 主流程 ---
 async function aiCheckDiffContext() {
   try {
-    // 获取 Diff
     const {items, isIncremental} = await getSmartDiffContext();
 
     if (items.length === 0) {
@@ -291,7 +333,6 @@ async function aiCheckDiffContext() {
     let allComments: Array<{ path: string, line: number, start_line?: number, body: string }> = [];
     let fileSummaries: Array<{ path: string, summary: string }> = [];
 
-    // 遍历文件进行 AI 审查
     for (let key in items) {
       if (!items[key]) continue;
       let item = items[key];
@@ -314,7 +355,6 @@ async function aiCheckDiffContext() {
         let commit: string = response.choices[0].message.content;
         commit = commit.trim();
 
-        // 提取 Markdown 代码块内容
         const match = commit.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
         if (match) {
           commit = match[2].trim();
@@ -333,7 +373,6 @@ async function aiCheckDiffContext() {
       }
     }
 
-    // 提交结果
     if (allComments.length > 0 || fileSummaries.length > 0) {
       let Review = useChinese ? "审核结果" : "Review";
       const modeLabel = isIncremental ? "(Incremental/增量)" : "(Full/全量)";
