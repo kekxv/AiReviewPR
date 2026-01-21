@@ -90,8 +90,8 @@ export async function post({url, body, header, json}: any): Promise<string> {
         try {
           if (json) {
             if (!responseBody.trim()) {
-               reject(new Error('Received empty response body'));
-               return;
+              reject(new Error('Received empty response body'));
+              return;
             }
             resolve(JSON.parse(responseBody));
           } else {
