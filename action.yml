@@ -41,7 +41,7 @@ inputs:
     default: 'http://127.0.0.1:11434'
   PROMPT_GENRE:
     description: 'prompt genre'
-    default: ' '
+    default: 'numbered'
   reviewers_prompt:
     description: 'system prompt'
     required: false

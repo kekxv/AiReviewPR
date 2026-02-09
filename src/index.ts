@@ -1,5 +1,6 @@
 import {execSync} from "node:child_process";
 import {doesAnyPatternMatch, parseAIReviewResponse, post, split_message} from "./utils";
+import {take_system_prompt} from "./prompt";
 import * as https from 'https';
 import * as http from 'http';
 import OpenAI from "openai";
@@ -68,38 +69,6 @@ const exclude_files = split_message(process.env.INPUT_EXCLUDE_FILES || "");
 const event_action = process.env.INPUT_EVENT_ACTION || "";
 const event_before = process.env.INPUT_EVENT_BEFORE || "";
 const force_full_review = (process.env.INPUT_REVIEW_PULL_REQUEST || "false").toLowerCase() === "true";
-
-export function system_prompt_numbered(lang: string) {
-  return `
-You are a pragmatic Senior Technical Lead. Review the provided git diff FOCUSING on the changed lines (prefixed with '+' or '-').
-
-**INPUT DATA FORMAT:**
-You will receive a <git_diff> containing the FULL file content with line numbers. 
-Lines prefixed with 'Line X: +' or 'Line X: -' are the changes.
-Lines prefixed with 'Line X: ' (with a space after the colon) are context lines.
-
-**REVIEW GUIDELINES:**
-1. **Focus:** Review ONLY the changes in <git_diff>. Use context lines to understand variable types and logic flow.
-2. **Threshold:** Only report issues with **Score >= 2**. Ignore trivial nits.
-3. **NO SUMMARIES:** Do not describe what the code does. Go straight to the issues.
-4. **LGTM:** If the code is high quality, output only "LGTM".
-
-**SCORING:**
-- [Score: 5] Critical (Security, Crash).
-- [Score: 4] Major (Logic, Performance).
-- [Score: 3] Moderate (Maintainability).
-- [Score: 2] Minor (Optimization).
-
-**OUTPUT FORMAT:**
----
-File: <file_path>
-Context: <EXACT COPY of the line from the diff starting with "Line X:">
-StartLine: <number>
-EndLine: <number>
-Comment: [Score: <2-5>] <Detailed feedback in ${lang}>
----
-`;
-}
 
 // --- API Logic ---
 
@@ -253,7 +222,7 @@ export async function aiCheckDiffContext() {
   const {items} = await getDiffItems();
   if (items.length === 0) return;
 
-  const system_prompt = reviewers_prompt || system_prompt_numbered(language);
+  const system_prompt = reviewers_prompt || take_system_prompt(process.env.INPUT_PROMPT_GENRE || "numbered", language);
   let allComments = [];
   let fileSummaries = [];
 

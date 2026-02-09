@@ -1,10 +1,9 @@
 import { execSync } from 'child_process';
-import * as fs from 'fs';
-import { 
+import {
   aiGenerate, 
-  system_prompt_numbered,
   addLineNumbersToDiff
-} from '../src/index';
+} from '../src';
+import {system_prompt_numbered} from "../src/prompt";
 
 /**
  * 本地测试脚本
