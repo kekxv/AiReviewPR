@@ -18,6 +18,9 @@ importers:
       '@types/node':
         specifier: ^22.10.6
         version: 22.19.2
+      '@vercel/ncc':
+        specifier: ^0.38.3
+        version: 0.38.4
       jest:
         specifier: ^29.7.0
         version: 29.7.0(@types/node@22.19.2)(ts-node@10.9.2(@types/node@22.19.2)(typescript@4.9.5))
@@ -354,6 +357,10 @@ packages:
 
   '@types/yargs@17.0.35':
     resolution: {integrity: sha512-qUHkeCyQFxMXg79wQfTtfndEC+N9ZZg76HJftDJp+qH2tV7Gj4OJi7l+PiWwJ+pWtW8GwSmqsDj/oymhrTWXjg==}
+
+  '@vercel/ncc@0.38.4':
+    resolution: {integrity: sha512-8LwjnlP39s08C08J5NstzriPvW1SP8Zfpp1BvC2sI35kPeZnHfxVkCwu4/+Wodgnd60UtT1n8K8zw+Mp7J9JmQ==}
+    hasBin: true
 
   acorn-walk@8.3.4:
     resolution: {integrity: sha512-ueEepnujpqee2o5aIYnvHU6C0A42MNdsIDeqy5BydrkuC5R1ZuUFnm27EeFJGoEHJQgn3uleRvmTXaJgfXbt4g==}
@@ -1711,6 +1718,8 @@ snapshots:
   '@types/yargs@17.0.35':
     dependencies:
       '@types/yargs-parser': 21.0.3
+
+  '@vercel/ncc@0.38.4': {}
 
   acorn-walk@8.3.4:
     dependencies:
