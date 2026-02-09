@@ -26,7 +26,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.aiCheckDiffContext = exports.getDiffItems = exports.getFileDiff = exports.getFileContent = exports.aiGenerate = exports.system_prompt_numbered = exports.addLineNumbersToDiff = void 0;
+exports.aiCheckDiffContext = exports.getDiffItems = exports.getFileDiff = exports.aiGenerate = exports.system_prompt_numbered = exports.addLineNumbersToDiff = void 0;
 const node_child_process_1 = require("node:child_process");
 const utils_1 = require("./utils");
 const https = __importStar(require("https"));
@@ -103,15 +103,15 @@ const event_before = process.env.INPUT_EVENT_BEFORE || "";
 const force_full_review = (process.env.INPUT_REVIEW_PULL_REQUEST || "false").toLowerCase() === "true";
 function system_prompt_numbered(lang) {
     return `
-You are a pragmatic Senior Technical Lead. Review the provided git diffs focusing on logic, security, performance, and maintainability.
+You are a pragmatic Senior Technical Lead. Review the provided git diff FOCUSING on the changed lines (prefixed with '+' or '-').
 
 **INPUT DATA FORMAT:**
-You will receive:
-1. <file_context>: Full source code of the file for background.
-2. <git_diff>: The changes to review, with line numbers.
+You will receive a <git_diff> containing the FULL file content with line numbers. 
+Lines prefixed with 'Line X: +' or 'Line X: -' are the changes.
+Lines prefixed with 'Line X: ' (with a space after the colon) are context lines.
 
 **REVIEW GUIDELINES:**
-1. **Focus:** Review ONLY the changes in <git_diff>. Use <file_context> to understand variable types and logic flow.
+1. **Focus:** Review ONLY the changes in <git_diff>. Use context lines to understand variable types and logic flow.
 2. **Threshold:** Only report issues with **Score >= 2**. Ignore trivial nits.
 3. **NO SUMMARIES:** Do not describe what the code does. Go straight to the issues.
 4. **LGTM:** If the code is high quality, output only "LGTM".
@@ -204,17 +204,8 @@ async function aiGenerate({ host, token, prompt, model, system }) {
 }
 exports.aiGenerate = aiGenerate;
 // --- Git Logic ---
-function getFileContent(ref, path) {
-    try {
-        return (0, node_child_process_1.execSync)(`git show "${ref}:${path}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
-    }
-    catch (e) {
-        return "";
-    }
-}
-exports.getFileContent = getFileContent;
 function getFileDiff(start, end, file) {
-    return (0, node_child_process_1.execSync)(`git diff "${start}" "${end}" -- "${file}"`, { encoding: 'utf-8' });
+    return (0, node_child_process_1.execSync)(`git diff --unified=9999 "${start}" "${end}" -- "${file}"`, { encoding: 'utf-8' });
 }
 exports.getFileDiff = getFileDiff;
 function commitExists(sha) {
@@ -274,8 +265,7 @@ async function getDiffItems() {
             const diffContext = getFileDiff(startPoint, endPoint, filePath);
             const numberedDiff = addLineNumbersToDiff(diffContext);
             if (numberedDiff.trim().length > 0) {
-                const content = getFileContent(endPoint, filePath);
-                items.push({ path: filePath, context: numberedDiff, content: content });
+                items.push({ path: filePath, context: numberedDiff });
             }
         }
     }
@@ -302,15 +292,11 @@ async function aiCheckDiffContext() {
     for (const item of items) {
         try {
             const prompt = `
-<file_context>
-${item.content}
-</file_context>
+Review the following <git_diff> and output issues in the specified format. If no issues, output "LGTM".
 
 <git_diff>
 ${item.context}
 </git_diff>
-
-Review the <git_diff> and output issues in the specified format. If no issues, output "LGTM".
 `;
             let content = await aiGenerate({
                 host: url, token: process.env.INPUT_AI_TOKEN, prompt: prompt, model: model, system: system_prompt

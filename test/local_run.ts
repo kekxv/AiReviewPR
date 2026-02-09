@@ -27,9 +27,9 @@ async function runLocalTest() {
   // 1. 获取 Git Diff
   let diffContext = "";
   try {
-    diffContext = execSync(`git diff HEAD -- "${filePath}"`, { encoding: 'utf-8' });
+    diffContext = execSync(`git diff --unified=9999 HEAD -- "${filePath}"`, { encoding: 'utf-8' });
     if (!diffContext.trim()) {
-      diffContext = execSync(`git diff HEAD~1 HEAD -- "${filePath}"`, { encoding: 'utf-8' });
+      diffContext = execSync(`git diff --unified=9999 HEAD~1 HEAD -- "${filePath}"`, { encoding: 'utf-8' });
     }
   } catch (e) {
     console.warn("[WARN] Git diff failed, using empty diff.");
@@ -37,26 +37,16 @@ async function runLocalTest() {
 
   const numberedDiff = diffContext.trim() ? addLineNumbersToDiff(diffContext) : "No changes detected.";
   
-  // 2. 获取文件完整内容
-  let fullContent = "";
-  if (fs.existsSync(filePath)) {
-    fullContent = fs.readFileSync(filePath, 'utf-8');
-  }
-
   // 3. 构建 Prompt
   const language = process.env.INPUT_LANGUAGE || process.env.LANGUAGE || "Chinese";
   const systemPrompt = system_prompt_numbered(language);
   
   const userPrompt = `
-<file_context>
-${fullContent}
-</file_context>
+Review the following <git_diff> and output issues in the specified format. If no issues, output "LGTM".
 
 <git_diff>
 ${numberedDiff}
 </git_diff>
-
-Review the <git_diff> and output issues in the specified format. If no issues, output "LGTM".
 `;
 
   console.log("\n" + "=".repeat(30) + " FULL PROMPT " + "=".repeat(30));
