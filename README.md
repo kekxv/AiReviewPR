@@ -45,7 +45,7 @@ jobs:
       - name: Review code
         uses: kekxv/AiReviewPR@v0.0.5
         with:
-          model: 'gemma2:2b'
+          model: 'gemma3:12b'
           host: ${{ vars.OLLAMA_HOST }}
           ai_token: ${{ secrets.AI_TOKEN }}
           REVIEW_PULL_REQUEST: false
@@ -102,7 +102,7 @@ result：
 8. **model**
   - **描述**: 用于代码审核的 AI 模型。
   - **必需**: 是。
-  - **默认值**: `'gemma2:2b'`。
+  - **默认值**: `'gemma3:12b'`。
 
 9. **host**
   - **描述**: Ollama 主机地址。
@@ -170,7 +170,7 @@ result：
 8. **model**
   - **Description**: AI model to use for code review.
   - **Required**: Yes.
-  - **Default Value**: `'gemma2:2b'`.
+  - **Default Value**: `'gemma3:12b'`.
 
 9. **host**
   - **Description**: Ollama host address.

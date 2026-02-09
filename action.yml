@@ -32,9 +32,9 @@ inputs:
       [Learn more about creating and using encrypted secrets](https://help.github.com/en/actions/automating-your-workflow-with-github-actions/creating-and-using-encrypted-secrets)
     default: ${{ github.token }}
   model:
-    description: 'AI model to use for code review (e.g., gemma2:2b, gpt-4o)'
+    description: 'AI model to use for code review (e.g., gemma3:12b, gpt-4o)'
     required: true
-    default: 'gemma2:2b'
+    default: 'gemma3:12b'
   host:
     description: 'ollama host or openai base url'
     required: true
