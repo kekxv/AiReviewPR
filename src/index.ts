@@ -2,6 +2,7 @@ import {execSync} from "node:child_process";
 import {doesAnyPatternMatch, parseAIReviewResponse, post, split_message} from "./utils";
 import * as https from 'https';
 import * as http from 'http';
+import OpenAI from "openai";
 
 // --- Utils: HTTP GET ---
 async function getRequest(url: string, headers: any): Promise<any> {
@@ -23,7 +24,7 @@ async function getRequest(url: string, headers: any): Promise<any> {
 }
 
 // --- Utils: Diff Line Numbers ---
-function addLineNumbersToDiff(diff: string): string {
+export function addLineNumbersToDiff(diff: string): string {
   const lines = diff.split('\n');
   let result = [];
   let currentNewLine = null;
@@ -56,68 +57,48 @@ function addLineNumbersToDiff(diff: string): string {
 }
 
 // --- Inputs ---
-let useChinese = (process.env.INPUT_CHINESE || "true").toLowerCase() != "false";
-const language = !process.env.INPUT_CHINESE ? (process.env.INPUT_LANGUAGE || "Chinese") : (useChinese ? "Chinese" : "English");
+const language = process.env.INPUT_LANGUAGE || process.env.LANGUAGE || "Chinese";
+let useChinese = language.toLowerCase() === "chinese" || (process.env.INPUT_CHINESE || process.env.CHINESE || "true").toLowerCase() !== "false";
+if (language.toLowerCase() !== "chinese" && !process.env.INPUT_CHINESE && !process.env.CHINESE) {
+  useChinese = false;
+}
 const reviewers_prompt = (process.env.INPUT_REVIEWERS_PROMPT || "");
-useChinese = language.toLowerCase() === "chinese"
 const include_files = split_message(process.env.INPUT_INCLUDE_FILES || "");
 const exclude_files = split_message(process.env.INPUT_EXCLUDE_FILES || "");
-
 const event_action = process.env.INPUT_EVENT_ACTION || "";
 const event_before = process.env.INPUT_EVENT_BEFORE || "";
 const force_full_review = (process.env.INPUT_REVIEW_PULL_REQUEST || "false").toLowerCase() === "true";
 
-function system_prompt_numbered(language: string) {
+export function system_prompt_numbered(lang: string) {
   return `
 You are a pragmatic Senior Technical Lead. Review the provided git diffs focusing on logic, security, performance, and maintainability.
 
-**INPUT CONTEXT:**
-The code is pre-processed with line numbers (e.g., "Line 12: + const a = 1;").
+**INPUT DATA FORMAT:**
+You will receive:
+1. <file_context>: Full source code of the file for background.
+2. <git_diff>: The changes to review, with line numbers.
 
 **REVIEW GUIDELINES:**
-1. **Filter Noise:** Ignore minor formatting/style issues (Prettier/ESLint) unless they affect logic.
-2. **Threshold:** Only report issues with **Score >= 2**. Ignore trivial nitpicks.
-3. **Context:** The "Context" field must be an EXACT COPY of the source line including the "Line X:" prefix.
-4. **Language:** Write the *content* of the comments in ${language}.
+1. **Focus:** Review ONLY the changes in <git_diff>. Use <file_context> to understand variable types and logic flow.
+2. **Threshold:** Only report issues with **Score >= 2**. Ignore trivial nits.
+3. **NO SUMMARIES:** Do not describe what the code does. Go straight to the issues.
+4. **LGTM:** If the code is high quality, output only "LGTM".
 
-**SCORING LEGEND:**
-- [Score: 5] Critical (Security hole, crash, data loss).
-- [Score: 4] Major (Logic error, performance bottleneck).
-- [Score: 3] Moderate (Bad practice, maintainability).
-- [Score: 2] Minor (Optimization suggestion).
-
-**LGTM LOGIC (Crucial):**
-- If the code looks good and **NO issues with Score >= 2** are found, output the Summary followed strictly by the text "**LGTM**".
-- Do NOT output any "File/Context/Comment" blocks in this case.
+**SCORING:**
+- [Score: 5] Critical (Security, Crash).
+- [Score: 4] Major (Logic, Performance).
+- [Score: 3] Moderate (Maintainability).
+- [Score: 2] Minor (Optimization).
 
 **OUTPUT FORMAT:**
-
-<Brief Summary of changes in ${language}>
-
-<If issues exist:>
 ---
 File: <file_path>
-Context: <EXACT COPY from diff>
+Context: <EXACT COPY of the line from the diff starting with "Line X:">
 StartLine: <number>
 EndLine: <number>
-Comment: [Score: 2-5] <Concise comment in ${language}>
+Comment: [Score: <2-5>] <Detailed feedback in ${lang}>
 ---
-
-<If NO issues exist:>
-LGTM
 `;
-}
-
-const system_prompt = reviewers_prompt || system_prompt_numbered(language);
-const url = process.env.INPUT_HOST;
-if (!url) {
-  console.error('HOST input is required.');
-  process.exit(1);
-}
-const model = process.env.INPUT_MODEL;
-if (!model) {
-  console.error('model input is required.');
-  process.exit(1);
 }
 
 // --- API Logic ---
@@ -164,38 +145,48 @@ async function submitPullRequestReview(message: string, event: string, comments:
   });
 }
 
-async function aiGenerate({host, token, prompt, model, system}: any): Promise<any> {
-  let endpoint = host;
-  if (!endpoint.endsWith("/")) endpoint += "/";
-  if (!endpoint.includes("/v1/")) endpoint += "v1/";
-  endpoint += "chat/completions";
-  return await post({
-    url: endpoint,
-    body: JSON.stringify({
-      model,
-      messages: [{role: "system", content: system}, {role: "user", content: prompt}],
-      temperature: 0.7
-    }),
-    header: (token && token.trim() !== "") ? {'Authorization': `Bearer ${token}`} : {}
+export async function aiGenerate({host, token, prompt, model, system}: any): Promise<string> {
+  const openai = new OpenAI({
+    baseURL: host,
+    apiKey: token || "ignored",
   });
+
+  const stream = await openai.chat.completions.create({
+    model: model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt },
+    ],
+    temperature: 0.4,
+    stream: true,
+  });
+
+  let fullContent = "";
+  for await (const chunk of stream) {
+    const content = chunk.choices[0]?.delta?.content || "";
+    if (content) {
+      fullContent += content;
+      process.stdout.write(content);
+    }
+  }
+  process.stdout.write("\n");
+  return fullContent;
 }
 
-// --- Improved Git Logic ---
+// --- Git Logic ---
 
-// 尝试拉取对象
-function fetchTarget(target: string, depth: number = 1): boolean {
+export function getFileContent(ref: string, path: string): string {
   try {
-    // 显式打印命令，方便调试
-    console.log(`[GIT] Fetching ${target} with depth ${depth}...`);
-    execSync(`git fetch origin ${target} --depth=${depth}`, {stdio: 'inherit'}); // 使用 inherit 查看 git 原生报错
-    return true;
+    return execSync(`git show "${ref}:${path}"`, {encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore']});
   } catch (e) {
-    console.warn(`[WARN] Fetch failed for ${target}. The server might deny fetching specific SHAs.`);
-    return false;
+    return "";
   }
 }
 
-// 严格检查 Commit 是否存在 (使用 git cat-file -e)
+export function getFileDiff(start: string, end: string, file: string): string {
+  return execSync(`git diff "${start}" "${end}" -- "${file}"`, {encoding: 'utf-8'});
+}
+
 function commitExists(sha: string): boolean {
   try {
     execSync(`git cat-file -e "${sha}^{commit}"`, {stdio: 'ignore'});
@@ -205,75 +196,43 @@ function commitExists(sha: string): boolean {
   }
 }
 
-// 获取文件差异列表
 function getChangedFiles(start: string, end: string): string[] {
-  try {
-    const output = execSync(`git diff --name-only "${start}" "${end}"`, {encoding: 'utf-8'});
-    return output.trim().split("\n").filter(f => f);
-  } catch (e) {
-    throw new Error(`Git diff --name-only failed between ${start} and ${end}`);
-  }
+  const output = execSync(`git diff --name-only "${start}" "${end}"`, {encoding: 'utf-8'});
+  return output.trim().split("\n").filter(f => f);
 }
 
-// 获取文件具体内容差异
-function getFileDiff(start: string, end: string, file: string): string {
-  return execSync(`git diff "${start}" "${end}" -- "${file}"`, {encoding: 'utf-8'});
-}
-
-// --- Core Logic with Fallback ---
-
-async function getDiffItems() {
+export async function getDiffItems() {
   const BASE_REF = process.env.INPUT_BASE_REF || "";
   let startPoint = "";
   const endPoint = "HEAD";
   let isIncremental = false;
 
-  console.log(`[INFO] Event: '${event_action}', ForceFull: ${force_full_review}`);
-
-  // 1. Determine Start Point
-  const isSyncEvent = event_action.includes("sync"); // synchronized or synchronize
-
+  const isSyncEvent = event_action.includes("sync");
   if (!force_full_review && isSyncEvent) {
-    if (event_before && event_before !== "null" && event_before.trim() !== "") {
+    if (event_before && event_before !== "null") {
       startPoint = event_before;
       isIncremental = true;
-      console.log(`[INFO] Strategy: Payload Before (${startPoint})`);
     } else {
-      console.log(`[INFO] Strategy: Querying API for last reviewed commit...`);
       const lastReviewedSha = await getLastReviewedCommitId();
       if (lastReviewedSha) {
         startPoint = lastReviewedSha;
         isIncremental = true;
-        console.log(`[INFO] Found previous review: ${startPoint}`);
       }
     }
   }
 
-  // 2. Prepare Local Data (Fetch if needed)
-  if (isIncremental && startPoint) {
-    if (!commitExists(startPoint)) {
-      console.log(`[INFO] Start point ${startPoint} missing. Attempting fetch...`);
-      fetchTarget(startPoint);
-    }
-
-    if (!commitExists(startPoint)) {
-      console.warn(`[WARN] Start point ${startPoint} unreachable. Fallback to Full Review.`);
-      isIncremental = false;
-    }
+  if (isIncremental && !commitExists(startPoint)) {
+     try { execSync(`git fetch origin ${startPoint} --depth=1`, {stdio: 'ignore'}); } catch(e) {}
   }
-
-  if (!isIncremental) {
+  if (!isIncremental || !commitExists(startPoint)) {
     startPoint = `origin/${BASE_REF}`;
-    console.log(`[INFO] Mode: Full Review (Base: ${startPoint})`);
-    fetchTarget(BASE_REF);
+    try { execSync(`git fetch origin ${BASE_REF} --depth=1`, {stdio: 'ignore'}); } catch(e) {}
+    isIncremental = false;
   }
 
-  // 3. Execute Diff with Safe Fallback
   let items = [];
   try {
-    console.log(`[INFO] Executing Diff: ${startPoint} ... ${endPoint}`);
-    const files = getChangedFiles(startPoint, endPoint); // 这一步可能会抛错
-
+    const files = getChangedFiles(startPoint, endPoint);
     for (const filePath of files) {
       if ((include_files.length > 0) && (!doesAnyPatternMatch(include_files, filePath))) continue;
       if ((exclude_files.length > 0) && (doesAnyPatternMatch(exclude_files, filePath))) continue;
@@ -281,105 +240,71 @@ async function getDiffItems() {
       const diffContext = getFileDiff(startPoint, endPoint, filePath);
       const numberedDiff = addLineNumbersToDiff(diffContext);
       if (numberedDiff.trim().length > 0) {
-        items.push({path: filePath, context: numberedDiff});
+        const content = getFileContent(endPoint, filePath);
+        items.push({path: filePath, context: numberedDiff, content: content});
       }
     }
-  } catch (error: any) {
-    console.error(`[ERROR] Diff failed: ${error.message}`);
-
-    // --- 终极保底重试逻辑 ---
-    if (isIncremental) {
-      console.warn(`[WARN] Incremental diff failed. Switching to Full Review and retrying...`);
-      // 强制全量
-      startPoint = `origin/${BASE_REF}`;
-      fetchTarget(BASE_REF);
-
-      try {
-        console.log(`[INFO] Retrying Diff: ${startPoint} ... ${endPoint}`);
-        const files = getChangedFiles(startPoint, endPoint);
-        for (const filePath of files) {
-          if ((include_files.length > 0) && (!doesAnyPatternMatch(include_files, filePath))) continue;
-          if ((exclude_files.length > 0) && (doesAnyPatternMatch(exclude_files, filePath))) continue;
-
-          const diffContext = getFileDiff(startPoint, endPoint, filePath);
-          const numberedDiff = addLineNumbersToDiff(diffContext);
-          if (numberedDiff.trim().length > 0) {
-            items.push({path: filePath, context: numberedDiff});
-          }
-        }
-        isIncremental = false; // 标记为全量
-      } catch (retryError) {
-        console.error(`[FATAL] Full review retry also failed.`, retryError);
-        return {items: [], isIncremental: false};
-      }
-    }
-  }
-
+  } catch (e) {}
   return {items, isIncremental};
 }
 
-
 // --- Main ---
 
-async function aiCheckDiffContext() {
-  try {
-    const {items, isIncremental} = await getDiffItems();
+export async function aiCheckDiffContext() {
+  const url = process.env.INPUT_HOST;
+  const model = process.env.INPUT_MODEL;
+  if (!url || !model) {
+    console.error('HOST and model are required.');
+    if (require.main === module) process.exit(1);
+    return;
+  }
 
-    if (items.length === 0) {
-      console.log("No changes detected. LGTM.");
-      return;
+  const {items} = await getDiffItems();
+  if (items.length === 0) return;
+
+  const system_prompt = reviewers_prompt || system_prompt_numbered(language);
+  let allComments = [];
+  let fileSummaries = [];
+
+  for (const item of items) {
+    try {
+      const prompt = `
+<file_context>
+${item.content}
+</file_context>
+
+<git_diff>
+${item.context}
+</git_diff>
+
+Review the <git_diff> and output issues in the specified format. If no issues, output "LGTM".
+`;
+      let content = await aiGenerate({
+        host: url, token: process.env.INPUT_AI_TOKEN, prompt: prompt, model: model, system: system_prompt
+      });
+
+      if (!content) continue;
+      const match = content.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
+      if (match) content = match[2].trim();
+
+      const parsed = parseAIReviewResponse(content);
+      if (parsed.comments.length > 0) allComments.push(...parsed.comments);
+      if (parsed.body) fileSummaries.push({path: item.path, summary: parsed.body});
+    } catch (e) {
+      console.error("[ERROR] Failed to review file:", item.path, e);
     }
+  }
 
-    let allComments = [];
-    let fileSummaries = [];
-
-    for (const item of items) {
-      console.log(`[DEBUG] Reviewing: ${item.path}`);
-      try {
-        let response = await aiGenerate({
-          host: url, token: process.env.INPUT_AI_TOKEN, prompt: item.context, model: model, system: system_prompt
-        });
-        if (!response.choices || response.choices.length === 0) continue;
-
-        let content = response.choices[0].message.content.trim();
-        const match = content.match(/^```(markdown)?\s*([\s\S]*?)\s*```$/i);
-        if (match) content = match[2].trim();
-
-        const parsed = parseAIReviewResponse(content);
-        if (parsed.comments.length > 0) allComments.push(...parsed.comments);
-        if (parsed.body) fileSummaries.push({path: item.path, summary: parsed.body});
-      } catch (e) {
-        console.error(`[ERROR] AI check failed for ${item.path}:`, e);
-      }
+  if (allComments.length > 0 || fileSummaries.length > 0) {
+    let body = `# Review Summary\n\n`;
+    if (fileSummaries.length > 0) {
+      body += fileSummaries.map(s => `* **${s.path}**: ${s.summary.replace(/\n/g, ' ')}`).join('\n');
     }
-
-    if (allComments.length > 0 || fileSummaries.length > 0) {
-      let Review = useChinese ? "审核结果" : "Review";
-      let body = `# ${Review} Summary\n\n`;
-
-      if (fileSummaries.length > 0) {
-        body += fileSummaries.map(s => `* **${s.path}**: ${s.summary.replace(/\n/g, ' ')}`).join('\n');
-      }
-
-      let event = (allComments.length === 0 && body.includes("LGTM")) ? 'APPROVE' : 'COMMENT';
-      if (allComments.length > 0) event = 'COMMENT';
-
-      console.log(`[INFO] Submitting ${allComments.length} comments.`);
-      let resp = await submitPullRequestReview(body, event, allComments, process.env.GITHUB_SHA as string);
-      console.log("Submit success:", resp.id);
-    } else {
-      console.log("LGTM (No issues found).");
-    }
-
-  } catch (error) {
-    console.error('Execution Error:', error);
-    process.exit(1);
+    const event = allComments.length > 0 ? 'COMMENT' : 'APPROVE';
+    await submitPullRequestReview(body, event, allComments, process.env.GITHUB_SHA as string);
   }
 }
 
-aiCheckDiffContext()
-  .then(_ => console.log(useChinese ? "检查结束" : "review finish"))
-  .catch(e => {
-    console.error(useChinese ? "检查失败:" : "review error", e);
-    process.exit(1);
-  });
+if (require.main === module) {
+  aiCheckDiffContext().catch(console.error);
+}
