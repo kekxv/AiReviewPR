@@ -145,7 +145,8 @@ export function parseAIReviewResponse(aiResponse: string): {
   cleanResponse = cleanResponse.replace(/(^|\n)\s*LGTM\s*$/i, "").trim();
 
   // --- 2. 分割逻辑 ---
-  const parts = cleanResponse.split(/^\s*---+\s*$/gm);
+  // 修改分割逻辑，不仅支持 ^---$ 这种严格匹配，也支持前后有空格的情况
+  const parts = cleanResponse.split(/^-{3,}\s*$/gm);
 
   let mainBody = "";
   const lineComments: Array<{ path: string, line: number, start_line?: number, body: string }> = [];
@@ -155,15 +156,16 @@ export function parseAIReviewResponse(aiResponse: string): {
     if (!block) continue;
 
     // --- 3. 特征检测 ---
-    const hasFile = /^(?:File|文件)\s*[:：]/im.test(block);
-    const hasComment = /^(?:Comment|Review|评论|注释)\s*[:：]/im.test(block);
+    // 检查是否包含必要的字段，即使字段前面有微小的差异（如 "File:" vs "文件:"）
+    const hasFile = /^(?:File|文件|FilePath)\s*[:：]/im.test(block);
+    const hasComment = /^(?:Comment|Review|评论|注释|反馈)\s*[:：]/im.test(block);
 
     if (hasFile && hasComment) {
       // === 解析 Issue Block ===
-      const filePathMatch = block.match(/^(?:File|文件)\s*[:：]\s*(.*)$/im);
-      const startLineMatch = block.match(/^(?:StartLine|Start\s*Line|起始行号|开始行号)\s*[:：]\s*(\d+)$/im);
-      const endLineMatch = block.match(/^(?:(?:End)?Line|End\s*Line|结束行号)\s*[:：]\s*(\d+)$/im);
-      const commentBodyMatch = block.match(/^(?:Comment|Review|评论|注释)\s*[:：]\s*([\s\S]*)$/im);
+      const filePathMatch = block.match(/^(?:File|文件|FilePath)\s*[:：]\s*(.*)$/im);
+      const startLineMatch = block.match(/^(?:StartLine|Start\s*Line|起始行号|开始行号|Start)\s*[:：]\s*(\d+)$/im);
+      const endLineMatch = block.match(/^(?:(?:End)?Line|End\s*Line|结束行号|终止行号|End)\s*[:：]\s*(\d+)$/im);
+      const commentBodyMatch = block.match(/^(?:Comment|Review|评论|注释|反馈)\s*[:：]\s*([\s\S]*)$/im);
 
       if (filePathMatch && endLineMatch && commentBodyMatch) {
         const endLine = parseInt(endLineMatch[1], 10);
